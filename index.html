@@ -72,6 +72,8 @@ const REF_COLORS = {
 };
 
 const PROC_ORDER = ["Venoplasty", "PTA Leg", "TACE", "Cerebral Angiogram", "AVM Embolization", "Aneurysm Embolization", "Stroke"];
+const BODY_PROCS = ["Venoplasty", "PTA Leg", "TACE"];
+const NEURO_PROCS = ["Cerebral Angiogram", "AVM Embolization", "Aneurysm Embolization", "Stroke"];
 
 const MISIR_BLUE = "#2E7CB8";
 const CORAL = "#E8836F";
@@ -407,6 +409,15 @@ const btnStyle = (bg) => ({
 });
 const dateInputStyle = { border: "1px solid #DDE4E8", borderRadius: 7, padding: "6px 10px", fontSize: 13, color: "#1A2733" };
 
+// Reusable slide header used throughout the print report
+function SlideHeading({ children }) {
+  return (
+    <div style={{ fontSize: 17, fontWeight: 700, color: "#0F3B4D", borderBottom: "3px solid #0F3B4D", paddingBottom: 8, marginBottom: 18 }}>
+      {children}
+    </div>
+  );
+}
+
 function App() {
   const [exams, setExams] = useState([]);
   const [fileName, setFileName] = useState(null);
@@ -553,6 +564,38 @@ function App() {
     return out;
   }, [filteredExams]);
 
+  // Per-year, cross-procedure overview (used for the "ปริมาณรังสีที่ใช้ในหัตถการต่าง ๆ ประจำปี" report slides)
+  const yearlyOverview = useMemo(() => {
+    const yearsSet = new Set();
+    for (const e of filteredExams) {
+      if (!e.category || !PROC_ORDER.includes(e.category)) continue;
+      yearsSet.add(toBuddhistYear(Number(e.dateStr.slice(0, 4))));
+    }
+    const years = Array.from(yearsSet).sort((a, b) => a - b);
+    return years.map(yr => {
+      const data = PROC_ORDER.map(proc => {
+        const sub = filteredExams.filter(e => e.category === proc && toBuddhistYear(Number(e.dateStr.slice(0, 4))) === yr);
+        const med = sub.length ? median(sub.map(e => e.dap)) : null;
+        return {
+          proc,
+          MiSIR: med !== null ? Number(med.toFixed(2)) : 0,
+          DRLs: DRLS_THAILAND[proc] || 0,
+        };
+      });
+      return { yearLabel: `พ.ศ.${yr}`, data };
+    });
+  }, [filteredExams]);
+
+  // Historical count of Ka,r exceedances grouped by year (based on current threshold + date filter)
+  const exceedanceByYear = useMemo(() => {
+    const out = {};
+    for (const e of exceedances) {
+      const yr = toBuddhistYear(Number(e.dateStr.slice(0, 4)));
+      out[yr] = (out[yr] || 0) + 1;
+    }
+    return Object.keys(out).sort((a, b) => Number(a) - Number(b)).map(yr => ({ year: yr, count: out[yr] }));
+  }, [exceedances]);
+
   const chartData = combinedMonthly[selectedProc] || [];
   const refNames = Object.keys(INTL_REFS[selectedProc] || {});
   const drlValue = DRLS_THAILAND[selectedProc];
@@ -692,19 +735,103 @@ function App() {
   return (
     <div style={{ fontFamily: "'Inter', -apple-system, sans-serif", background: "#EEF2F4", minHeight: "100vh", color: "#1A2733", padding: "0 0 40px 0" }}>
 
-      {/* ============ PRINT-ONLY REPORT ============ */}
+      {/* ============ PRINT-ONLY REPORT (used for PDF export via window.print) ============ */}
+      {/* This entire report is generated from the currently filtered data (dateFrom/dateTo + threshold).
+          The general/reference text (definitions, objectives, DRL explanation, protocol, references) is
+          fixed to match the original slide report; only the charts/tables below use real uploaded data. */}
       <div className="print-report">
         <div style={{ fontFamily: "'Inter', sans-serif", color: "#1A2733" }}>
+
+          {/* Slide: Cover */}
           <div style={{ pageBreakAfter: "always", height: "100%", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", minHeight: "180mm" }}>
             <div style={{ fontSize: 26, fontWeight: 800, textAlign: "center", maxWidth: 700 }}>
               ปริมาณรังสีที่ผู้ป่วยได้รับจากการทำหัตถการรังสีร่วมรักษา
             </div>
-            <div style={{ fontSize: 16, color: "#5B6B75", marginTop: 8 }}>ข้อมูลเฉพาะช่วงเวลาที่เลือก</div>
+            <div style={{ fontSize: 16, color: "#5B6B75", marginTop: 8 }}>รายงานสรุป</div>
             <div style={{ fontSize: 12, color: "#8494A0", marginTop: 30 }}>
               ช่วงเวลา: {dateFrom} ถึง {dateTo} · สร้างจาก Dose Watch Dashboard
             </div>
           </div>
 
+          {/* Slide: DAP / Ka,r definitions + objectives */}
+          <div style={{ pageBreakAfter: "always", padding: "18px 26px", minHeight: "180mm" }}>
+            <SlideHeading>ตัวชี้วัดปริมาณรังสีในหัตถการรังสีร่วมรักษา</SlideHeading>
+            <div style={{ display: "flex", gap: 16 }}>
+              <div style={{ flex: 1, background: "#F8FAFB", borderRadius: 10, padding: 16, border: "1px solid #E2E8ED" }}>
+                <div style={{ fontWeight: 700, fontSize: 13.5, color: "#0F3B4D", marginBottom: 6 }}>Dose Area Product (DAP)</div>
+                <div style={{ fontSize: 12, color: "#3A4750", lineHeight: 1.7 }}>
+                  หน่วยวัด Gy·cm² ใช้ในการติดตามปริมาณรังสีจากการทำหัตถการต่าง ๆ
+                </div>
+              </div>
+              <div style={{ flex: 1, background: "#F8FAFB", borderRadius: 10, padding: 16, border: "1px solid #E2E8ED" }}>
+                <div style={{ fontWeight: 700, fontSize: 13.5, color: "#0F3B4D", marginBottom: 6 }}>Reference Air Kerma (Ka,r)</div>
+                <div style={{ fontSize: 12, color: "#3A4750", lineHeight: 1.7 }}>
+                  หน่วยวัด Gy หรือ mGy เป็น Absorbed Dose ใช้คำนึงถึงความปลอดภัยทางรังสีของผู้ป่วย
+                </div>
+              </div>
+            </div>
+            <div style={{ marginTop: 22, fontWeight: 700, fontSize: 13.5, color: "#0F3B4D" }}>วัตถุประสงค์</div>
+            <ol style={{ fontSize: 12, color: "#3A4750", lineHeight: 1.9, paddingLeft: 20 }}>
+              <li>เพื่อติดตามปริมาณรังสีจากการทำหัตถการรังสีร่วมรักษา</li>
+              <li>เพื่อเปรียบเทียบปริมาณรังสีจากการทำหัตถการกับปริมาณรังสีอ้างอิง (DRLs) ของประเทศไทยและประเทศต่าง ๆ</li>
+            </ol>
+          </div>
+
+          {/* Slide: DRLs definition + practical application */}
+          <div style={{ pageBreakAfter: "always", padding: "18px 26px", minHeight: "180mm" }}>
+            <SlideHeading>Diagnostic Reference Levels (DRLs)</SlideHeading>
+            <div style={{ fontSize: 12, color: "#3A4750", lineHeight: 1.8, marginBottom: 18 }}>
+              การกำหนดระดับค่าปริมาณรังสีที่เหมาะสม โดยภาพรังสีมีคุณภาพเพียงพอต่อการวินิจฉัย
+            </div>
+            <div style={{ background: "#FDF2E9", borderRadius: 10, padding: 16, marginBottom: 12, fontSize: 12.5, color: "#3A4750", lineHeight: 1.9 }}>
+              <div>☐ P50 (Median value) ในแต่ละหัตถการ</div>
+              <div>✕ ไม่เปรียบเทียบ DRLs กับปริมาณรังสีรายบุคคล</div>
+              <div>✓ เปรียบเทียบ: P50 ≤ DRLs (P75) หมายถึงปริมาณรังสีที่สามารถทำได้ (achievable dose)</div>
+            </div>
+            <div style={{ background: "#FDF2E9", borderRadius: 10, padding: 16, fontSize: 12.5, color: "#3A4750", lineHeight: 1.9 }}>
+              <div>✕ ไม่ใช่ Dose limit: ค่าที่เกิน DRLs ไม่ได้หมายความว่าหัตถการนั้นไม่ปลอดภัย แต่เป็นสัญญาณให้ต้องประเมินและพิจารณาความเหมาะสมของปริมาณรังสี</div>
+              <div style={{ marginTop: 8 }}>✓ เครื่องมือ Optimization: ค่าที่เกิน DRLs ควรได้รับการตรวจสอบและปรับปรุงระบบเอกซเรย์หรือโปรโตคอล</div>
+            </div>
+          </div>
+
+          {/* Slide: Overview stats + intervention lists (dynamic counts) */}
+          <div style={{ pageBreakAfter: "always", padding: "18px 26px", minHeight: "180mm" }}>
+            <SlideHeading>ภาพรวมข้อมูลในช่วงเวลาที่เลือก</SlideHeading>
+            <div style={{ display: "flex", gap: 14, marginBottom: 20 }}>
+              <div style={{ flex: 1, background: "#F8FAFB", border: "1px solid #E2E8ED", borderRadius: 10, padding: 16 }}>
+                <div style={{ fontSize: 11, color: "#5B6B75", textTransform: "uppercase" }}>Exam ทั้งหมด</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "#0F3B4D", fontFamily: "'IBM Plex Mono', monospace" }}>{overallStats.total.toLocaleString()}</div>
+              </div>
+              <div style={{ flex: 1, background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: 10, padding: 16 }}>
+                <div style={{ fontSize: 11, color: "#5B6B75", textTransform: "uppercase" }}>ผู้ป่วยเกิน {threshold} Gy</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "#B91C1C", fontFamily: "'IBM Plex Mono', monospace" }}>{exceedances.length}</div>
+              </div>
+              <div style={{ flex: 1, background: "#F0FBF7", border: "1px solid #99E0C9", borderRadius: 10, padding: 16 }}>
+                <div style={{ fontSize: 11, color: "#5B6B75", textTransform: "uppercase" }}>Ka,r สูงสุดที่พบ</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "#0F6B54", fontFamily: "'IBM Plex Mono', monospace" }}>{overallStats.maxKar.toFixed(2)} Gy</div>
+              </div>
+            </div>
+            <div style={{ fontWeight: 700, fontSize: 13.5, color: "#0F3B4D", marginBottom: 10 }}>Body Intervention</div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 18 }}>
+              {BODY_PROCS.map(p => (
+                <div key={p} style={{ background: "#F8FAFB", borderRadius: 8, padding: "8px 14px", fontSize: 12 }}>
+                  <span style={{ color: "#5B6B75" }}>{p}</span>{" "}
+                  <span style={{ fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace" }}>{overallStats.procCount[p] || 0} exam</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontWeight: 700, fontSize: 13.5, color: "#0F3B4D", marginBottom: 10 }}>Neuro Intervention</div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              {NEURO_PROCS.map(p => (
+                <div key={p} style={{ background: "#F8FAFB", borderRadius: 8, padding: "8px 14px", fontSize: 12 }}>
+                  <span style={{ color: "#5B6B75" }}>{p}</span>{" "}
+                  <span style={{ fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace" }}>{overallStats.procCount[p] || 0} exam</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Slides: Per-procedure monthly + yearly charts (fully data-driven) */}
           {PROC_ORDER.map((proc) => {
             const monthData = combinedMonthly[proc] || [];
             const yearData = combinedYearly[proc] || [];
@@ -720,37 +847,171 @@ function App() {
                 <div style={{ fontSize: 11, color: "#8494A0", marginBottom: 8 }}>
                   {drl ? `DRLs ประเทศไทย = ${drl.toFixed(2)} Gy·cm2` : "ไม่มีค่า DRLs อ้างอิงสำหรับหัตถการนี้"}
                 </div>
-                <div style={{ width: "100%", height: 260 }}>
-                  <LineChart width={1000} height={260} data={monthData} margin={{ top: 12, right: 20, left: 0, bottom: 4 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#EEF2F4" vertical={false} />
-                    <XAxis dataKey="month" tick={{ fontSize: 8 }} interval={0} angle={-35} textAnchor="end" height={50} />
-                    <YAxis tick={{ fontSize: 10 }} />
-                    <Tooltip />
-                    <Legend wrapperStyle={{ fontSize: 10 }} />
-                    {rnames.map(rn => (
-                      <Line key={rn} type="monotone" dataKey={rn} stroke={REF_COLORS[rn] || "#999"} strokeDasharray="5 4" dot={false} strokeWidth={1.2} isAnimationActive={false} />
-                    ))}
-                    <Line type="monotone" dataKey="MiSIR" stroke={MISIR_BLUE} strokeWidth={2} dot={{ r: 2.5 }} isAnimationActive={false} />
-                  </LineChart>
-                </div>
+                {monthData.length === 0 ? (
+                  <div style={{ padding: 40, textAlign: "center", color: "#8494A0", fontSize: 12.5 }}>ไม่มีข้อมูลในช่วงเวลาที่เลือกสำหรับหัตถการนี้</div>
+                ) : (
+                  <div style={{ width: "100%", height: 260 }}>
+                    <LineChart width={1000} height={260} data={monthData} margin={{ top: 12, right: 20, left: 0, bottom: 4 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#EEF2F4" vertical={false} />
+                      <XAxis dataKey="month" tick={{ fontSize: 8 }} interval={0} angle={-35} textAnchor="end" height={50} />
+                      <YAxis tick={{ fontSize: 10 }} />
+                      <Tooltip />
+                      <Legend wrapperStyle={{ fontSize: 10 }} />
+                      {rnames.map(rn => (
+                        <Line key={rn} type="monotone" dataKey={rn} stroke={REF_COLORS[rn] || "#999"} strokeDasharray="5 4" dot={false} strokeWidth={1.2} isAnimationActive={false} />
+                      ))}
+                      <Line type="monotone" dataKey="MiSIR" stroke={MISIR_BLUE} strokeWidth={2} dot={{ r: 2.5 }} isAnimationActive={false} />
+                    </LineChart>
+                  </div>
+                )}
 
                 <div style={{ fontSize: 15, fontWeight: 700, marginTop: 16, marginBottom: 2, borderBottom: "2px solid #0F3B4D", paddingBottom: 6 }}>
                   เปรียบเทียบรายปี — {proc}
                 </div>
-                <div style={{ width: "100%", height: 240 }}>
-                  <BarChart width={700} height={240} data={yearData} margin={{ top: 12, right: 20, left: 0, bottom: 4 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#EEF2F4" vertical={false} />
-                    <XAxis dataKey="year" tick={{ fontSize: 10 }} />
-                    <YAxis tick={{ fontSize: 10 }} />
-                    <Tooltip />
-                    <Legend wrapperStyle={{ fontSize: 10 }} />
-                    <Bar dataKey="MiSIR" fill={CORAL} isAnimationActive={false} />
-                    {hasDRL && <Bar dataKey="DRLs" fill={DRL_GOLD} isAnimationActive={false} />}
-                  </BarChart>
-                </div>
+                {yearData.length === 0 ? (
+                  <div style={{ padding: 30, textAlign: "center", color: "#8494A0", fontSize: 12.5 }}>ไม่มีข้อมูลในช่วงเวลาที่เลือกสำหรับหัตถการนี้</div>
+                ) : (
+                  <div style={{ width: "100%", height: 240 }}>
+                    <BarChart width={700} height={240} data={yearData} margin={{ top: 12, right: 20, left: 0, bottom: 4 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#EEF2F4" vertical={false} />
+                      <XAxis dataKey="year" tick={{ fontSize: 10 }} />
+                      <YAxis tick={{ fontSize: 10 }} />
+                      <Tooltip />
+                      <Legend wrapperStyle={{ fontSize: 10 }} />
+                      <Bar dataKey="MiSIR" fill={CORAL} isAnimationActive={false} />
+                      {hasDRL && <Bar dataKey="DRLs" fill={DRL_GOLD} isAnimationActive={false} />}
+                    </BarChart>
+                  </div>
+                )}
               </div>
             );
           })}
+
+          {/* Slides: Per-year, cross-procedure overview (dynamic, one slide per year present in the data) */}
+          {yearlyOverview.map((yo) => (
+            <div key={yo.yearLabel} style={{ pageBreakAfter: "always", padding: "16px 24px" }}>
+              <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10, borderBottom: "2px solid #0F3B4D", paddingBottom: 6 }}>
+                ปริมาณรังสีที่ใช้ในหัตถการต่าง ๆ (DAP) ประจำ{yo.yearLabel}
+              </div>
+              <div style={{ width: "100%", height: 320 }}>
+                <BarChart width={1000} height={320} data={yo.data} margin={{ top: 12, right: 20, left: 0, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#EEF2F4" vertical={false} />
+                  <XAxis dataKey="proc" tick={{ fontSize: 9 }} interval={0} angle={-20} textAnchor="end" height={70} />
+                  <YAxis tick={{ fontSize: 10 }} label={{ value: "DAP (Gy·cm2)", angle: -90, position: "insideLeft", fontSize: 10 }} />
+                  <Tooltip />
+                  <Legend wrapperStyle={{ fontSize: 10 }} />
+                  <Bar dataKey="MiSIR" fill={CORAL} isAnimationActive={false} />
+                  <Bar dataKey="DRLs" fill={DRL_GOLD} isAnimationActive={false} />
+                </BarChart>
+              </div>
+            </div>
+          ))}
+
+          {/* Slide: Ka,r monitoring objectives */}
+          <div style={{ pageBreakAfter: "always", padding: "18px 26px", minHeight: "180mm" }}>
+            <SlideHeading>ปริมาณรังสีที่ผู้ป่วยได้รับจากการทำหัตถการรังสีร่วมรักษา (การติดตาม Ka,r)</SlideHeading>
+            <div style={{ fontWeight: 700, fontSize: 13.5, color: "#0F3B4D", marginBottom: 8 }}>วัตถุประสงค์</div>
+            <ol style={{ fontSize: 12, color: "#3A4750", lineHeight: 1.9, paddingLeft: 20 }}>
+              <li>เพื่อติดตามอาการและผลข้างเคียงของผู้ป่วยที่ได้รับปริมาณรังสีจากการทำหัตถการรังสีร่วมรักษา ≥ {threshold} Gy</li>
+              <li>เพื่อศึกษาพารามิเตอร์ที่ส่งผลกับปริมาณรังสีที่ผู้ป่วยได้รับ และปรับใช้พารามิเตอร์ที่เกี่ยวข้องอย่างเหมาะสมเพื่อให้เกิดความปลอดภัยทางรังสีแก่ผู้ป่วย</li>
+            </ol>
+          </div>
+
+          {/* Slide: Historical yearly exceedance count table (dynamic) */}
+          <div style={{ pageBreakAfter: "always", padding: "18px 26px", minHeight: "180mm" }}>
+            <SlideHeading>จำนวนผู้ป่วยที่ได้รับปริมาณรังสี Reference air kerma (Ka,r) ≥ {threshold} Gy รายปี</SlideHeading>
+            {exceedanceByYear.length === 0 ? (
+              <div style={{ padding: 40, textAlign: "center", color: "#8494A0", fontSize: 13 }}>ไม่พบผู้ป่วยที่มีค่า Ka,r เกินเกณฑ์ที่กำหนดในช่วงเวลานี้</div>
+            ) : (
+              <table style={{ borderCollapse: "collapse", fontSize: 12.5, maxWidth: 420 }}>
+                <thead>
+                  <tr>
+                    <th style={{ background: "#0F3B4D", color: "#fff", padding: "8px 14px", textAlign: "left" }}>ปี พ.ศ.</th>
+                    <th style={{ background: "#0F3B4D", color: "#fff", padding: "8px 14px", textAlign: "left" }}>จำนวนผู้ป่วย (ราย)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {exceedanceByYear.map(row => (
+                    <tr key={row.year} style={{ borderBottom: "1px solid #EEF2F4" }}>
+                      <td style={{ padding: "8px 14px" }}>พ.ศ.{row.year}</td>
+                      <td style={{ padding: "8px 14px", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700 }}>{row.count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* Slide: Exceedance case detail list (dynamic) */}
+          <div style={{ pageBreakAfter: "always", padding: "18px 26px", minHeight: "180mm" }}>
+            <SlideHeading>รายละเอียดผู้ป่วยที่ได้รับปริมาณรังสี Ka,r ≥ {threshold} Gy ({exceedances.length} ราย)</SlideHeading>
+            {exceedances.length === 0 ? (
+              <div style={{ padding: 40, textAlign: "center", color: "#8494A0", fontSize: 13 }}>ไม่พบผู้ป่วยที่มีค่า Ka,r เกินเกณฑ์ที่กำหนดในช่วงเวลานี้</div>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                <thead>
+                  <tr>
+                    {["HN", "ชื่อผู้ป่วย", "วันที่", "หัตถการ", "Ka,r (Gy)", "DAP (Gy·cm2)"].map(h => (
+                      <th key={h} style={{ background: "#0F3B4D", color: "#fff", padding: "6px 10px", textAlign: "left" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {exceedances.map((e, i) => (
+                    <tr key={i} style={{ borderBottom: "1px solid #EEF2F4" }}>
+                      <td style={{ padding: "6px 10px", fontFamily: "'IBM Plex Mono', monospace" }}>{e.mrn || "-"}</td>
+                      <td style={{ padding: "6px 10px" }}>{e.patientName || "-"}</td>
+                      <td style={{ padding: "6px 10px", fontFamily: "'IBM Plex Mono', monospace" }}>{e.dateStr}</td>
+                      <td style={{ padding: "6px 10px" }}>{e.procedureRaw}</td>
+                      <td style={{ padding: "6px 10px", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: e.kar_Gy >= 5 ? "#B91C1C" : "#C2410C" }}>{e.kar_Gy.toFixed(2)}</td>
+                      <td style={{ padding: "6px 10px", fontFamily: "'IBM Plex Mono', monospace" }}>{e.dap.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <div style={{ marginTop: 18, fontSize: 11, color: "#8494A0", fontStyle: "italic" }}>
+              หมายเหตุ: กรุณาตรวจสอบและบันทึกผลข้างเคียงทางคลินิกของผู้ป่วยแต่ละรายเพิ่มเติมตามการติดตามจริง
+            </div>
+          </div>
+
+          {/* Slide: Safety protocol flow (static, matches original document) */}
+          <div style={{ pageBreakAfter: "always", padding: "18px 26px", minHeight: "180mm" }}>
+            <SlideHeading>แนวทางการดูแลผู้ป่วยเมื่อปริมาณรังสีเพิ่มขึ้นระหว่างหัตถการ</SlideHeading>
+            <div style={{ display: "flex", gap: 10, alignItems: "stretch", fontSize: 11 }}>
+              {[
+                "ก่อนหัตถการ: หัตถการที่มีความเสี่ยง dose สูง ให้ข้อมูลความเสี่ยงที่อาจเกิดขึ้น ผู้ป่วยเซ็นยินยอมเข้ารับการรักษา",
+                "Ka,r = 3 Gy: แจ้งให้แพทย์ทราบครั้งที่ 1",
+                "Ka,r เพิ่มขึ้นทุก ๆ 1 Gy: แจ้งให้แพทย์ทราบอย่างต่อเนื่อง",
+                "Ka,r ≥ 5 Gy: แจ้งให้แพทย์ทราบครั้งที่ 2 และแจ้งให้รังสีแพทย์/พยาบาลสังเกตอาการ",
+                "หลังหัตถการ: ส่ง Dose report ไปยัง Dose PACS ติดตามอาการผู้ป่วยภายใน 1 เดือน (ผู้ป่วยใน/ผู้ป่วยนอก)",
+              ].map((t, i) => (
+                <div key={i} style={{ flex: 1, background: "#F8FAFB", border: "1px solid #E2E8ED", borderRadius: 8, padding: 12, display: "flex", alignItems: "center" }}>
+                  {t}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Slide: References (static) */}
+          <div style={{ pageBreakAfter: "always", padding: "18px 26px", fontSize: 10, minHeight: "180mm" }}>
+            <SlideHeading>เอกสารอ้างอิง</SlideHeading>
+            <ol style={{ lineHeight: 2, color: "#3A4750", paddingLeft: 18 }}>
+              <li>Miller DL, Kwon D, Bonavia GH. Reference Levels for Patient Radiation Doses in Interventional Radiology. Radiology 2009.</li>
+              <li>Etard C, et al. Patient dose in interventional radiology: a multicentre study of the most frequent procedures in France. Eur Radiol 2017.</li>
+              <li>Ruiz-Cruces R, et al. Diagnostic reference levels and complexity indices in interventional radiology: a national programme. Eur Radiol 2016.</li>
+              <li>Schegerer A, et al. Diagnostic Reference Levels for Diagnostic and Interventional X-Ray Procedures in Germany. Rofo 2019.</li>
+              <li>Vano E, et al. Patient Dose Reference Levels for Interventional Radiology: A National Approach. Cardiovasc Intervent Radiol 2009.</li>
+              <li>Hassan AE, Amelot S. Radiation Exposure during Neurointerventional Procedures in Modern Biplane Angiographic Systems. Interv Neurol 2017.</li>
+              <li>Diagnostic Reference Levels (DRLs). IAEA, 2017.</li>
+              <li>โครงการ DRL ประเทศไทย, กรมวิทยาศาสตร์การแพทย์ กระทรวงสาธารณสุข.</li>
+            </ol>
+          </div>
+
+          {/* Slide: Thank you */}
+          <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", minHeight: "180mm" }}>
+            <div style={{ fontSize: 30, fontWeight: 800, color: "#0F3B4D" }}>THANK YOU</div>
+          </div>
         </div>
       </div>
 
@@ -1055,150 +1316,5 @@ ReactDOM.createRoot(rootEl).render(<App />);
     }
   })();
 </script>
- <!-- ================= เริ่มต้นส่วน PDF Export ================= -->
-<!-- 1. ดึงไลบรารีแปลง PDF -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
-
-<!-- 2. ตกแต่งหน้าตา PDF (สไลด์แนวนอน ส้มพีช-เทาเข้ม) -->
-<style>
-  #pdf-template-wrapper {
-    display: none; /* ซ่อนไว้ไม่ให้เห็นบนหน้าเว็บปกติ */
-  }
-  .pdf-slide {
-    width: 297mm;
-    height: 209mm;
-    box-sizing: border-box;
-    padding: 15mm;
-    position: relative;
-    background: #ffffff;
-    font-family: 'Sarabun', 'Prompt', sans-serif;
-    color: #1C3D4A;
-    page-break-after: always;
-  }
-  .pdf-corner-top {
-    position: absolute; top: 0; left: 0;
-    width: 0; height: 0;
-    border-top: 60px solid #E8826B; border-right: 90px solid transparent;
-  }
-  .pdf-corner-bottom {
-    position: absolute; bottom: 0; right: 0;
-    width: 0; height: 0;
-    border-bottom: 60px solid #E8826B; border-left: 90px solid transparent;
-  }
-  .pdf-cover-title {
-    text-align: center; margin-top: 55mm; color: #1C3D4A; font-size: 26pt; font-weight: bold;
-  }
-  .pdf-cover-sub {
-    text-align: center; color: #E8826B; font-size: 20pt; margin-top: 10px;
-  }
-  .pdf-header-bar {
-    background-color: #E8826B; color: white; padding: 8px 16px;
-    font-size: 16pt; font-weight: bold; border-radius: 4px; margin-bottom: 20px;
-  }
-  .pdf-grid {
-    display: flex; gap: 15px; margin-bottom: 20px;
-  }
-  .pdf-card {
-    flex: 1; background: #F8F9FA; border: 1px solid #E2E8F0;
-    border-left: 5px solid #1C3D4A; padding: 12px; border-radius: 4px;
-  }
-  .pdf-card-label { font-size: 11pt; color: #666; display: block; }
-  .pdf-card-val { font-size: 18pt; font-weight: bold; color: #1C3D4A; }
-  .pdf-table {
-    width: 100%; border-collapse: collapse; margin-top: 10px;
-  }
-  .pdf-table th, .pdf-table td {
-    border: 1px solid #CBD5E1; padding: 8px 12px; font-size: 11pt; text-align: left;
-  }
-  .pdf-table th { background-color: #1C3D4A; color: white; }
-</style>
-
-<!-- 3. แม่แบบเนื้อหาใน PDF -->
-<div id="pdf-template-wrapper">
-  <div id="pdf-content">
-    
-    <!-- สไลด์หน้าปก -->
-    <div class="pdf-slide">
-      <div class="pdf-corner-top"></div>
-      <div class="pdf-cover-title">ปริมาณรังสีในหัตถการรังสีร่วมรักษา</div>
-      <div class="pdf-cover-sub">รายงานสรุปประจำปี พ.ศ. 2568</div>
-      <div class="pdf-corner-bottom"></div>
-    </div>
-
-    <!-- สไลด์สรุปผล -->
-    <div class="pdf-slide">
-      <div class="pdf-header-bar">สรุปภาพรวมปริมาณรังสีสะสม</div>
-      
-      <div class="pdf-grid">
-        <div class="pdf-card">
-          <span class="pdf-card-label">จำนวน EXAM ทั้งหมด</span>
-          <span class="pdf-card-val" id="pdf-val-exam">1,484</span>
-        </div>
-        <div class="pdf-card">
-          <span class="pdf-card-label">ผู้ป่วย Ka,r ≥ 3 Gy</span>
-          <span class="pdf-card-val" id="pdf-val-over3">0</span>
-        </div>
-        <div class="pdf-card">
-          <span class="pdf-card-label">ค่า Ka,r สูงสุดที่พบ</span>
-          <span class="pdf-card-val" id="pdf-val-max">2.56 Gy</span>
-        </div>
-      </div>
-
-      <table class="pdf-table">
-        <thead>
-          <tr>
-            <th>ประเภทหัตถการ</th>
-            <th>เกณฑ์ DRLs ไทย (Gy·cm²)</th>
-            <th>สถานะการประเมิน</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>AVM Embolization</td>
-            <td>187</td>
-            <td>ผ่านเกณฑ์มาตรฐาน</td>
-          </tr>
-          <tr>
-            <td>Aneurysm Embolization</td>
-            <td>209</td>
-            <td>ผ่านเกณฑ์มาตรฐาน</td>
-          </tr>
-          <tr>
-            <td>TACE / Body IR</td>
-            <td>ติดตามตามมาตรฐาน</td>
-            <td>ผ่านเกณฑ์มาตรฐาน</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-  </div>
-</div>
-
-<!-- 4. คำสั่งระบบจับการคลิกปุ่ม "ดาวน์โหลด PDF" อัตโนมัติ -->
-<script>
-  document.addEventListener('DOMContentLoaded', function () {
-    // ค้นหาปุ่มที่มีคำว่า "ดาวน์โหลด PDF" บนหน้าเว็บ
-    const buttons = Array.from(document.querySelectorAll('button'));
-    const pdfBtn = buttons.find(b => b.textContent.includes('ดาวน์โหลด PDF'));
-
-    if (pdfBtn) {
-      pdfBtn.addEventListener('click', function () {
-        const element = document.getElementById('pdf-content');
-        const opt = {
-          margin:       0,
-          filename:     'Radiation_Dose_Report_2068.pdf',
-          image:        { type: 'jpeg', quality: 0.98 },
-          html2canvas:  { scale: 2, useCORS: true },
-          jsPDF:        { unit: 'mm', format: 'a4', orientation: 'landscape' }
-        };
-
-        // สั่งสร้างไฟล์ PDF
-        html2pdf().set(opt).from(element).save();
-      });
-    }
-  });
-</script>
-<!-- ================= จบส่วน PDF Export ================= -->
 </body>
 </html>
