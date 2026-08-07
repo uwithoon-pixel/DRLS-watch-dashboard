@@ -1055,5 +1055,150 @@ ReactDOM.createRoot(rootEl).render(<App />);
     }
   })();
 </script>
+ <!-- ================= เริ่มต้นส่วน PDF Export ================= -->
+<!-- 1. ดึงไลบรารีแปลง PDF -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+<!-- 2. ตกแต่งหน้าตา PDF (สไลด์แนวนอน ส้มพีช-เทาเข้ม) -->
+<style>
+  #pdf-template-wrapper {
+    display: none; /* ซ่อนไว้ไม่ให้เห็นบนหน้าเว็บปกติ */
+  }
+  .pdf-slide {
+    width: 297mm;
+    height: 209mm;
+    box-sizing: border-box;
+    padding: 15mm;
+    position: relative;
+    background: #ffffff;
+    font-family: 'Sarabun', 'Prompt', sans-serif;
+    color: #1C3D4A;
+    page-break-after: always;
+  }
+  .pdf-corner-top {
+    position: absolute; top: 0; left: 0;
+    width: 0; height: 0;
+    border-top: 60px solid #E8826B; border-right: 90px solid transparent;
+  }
+  .pdf-corner-bottom {
+    position: absolute; bottom: 0; right: 0;
+    width: 0; height: 0;
+    border-bottom: 60px solid #E8826B; border-left: 90px solid transparent;
+  }
+  .pdf-cover-title {
+    text-align: center; margin-top: 55mm; color: #1C3D4A; font-size: 26pt; font-weight: bold;
+  }
+  .pdf-cover-sub {
+    text-align: center; color: #E8826B; font-size: 20pt; margin-top: 10px;
+  }
+  .pdf-header-bar {
+    background-color: #E8826B; color: white; padding: 8px 16px;
+    font-size: 16pt; font-weight: bold; border-radius: 4px; margin-bottom: 20px;
+  }
+  .pdf-grid {
+    display: flex; gap: 15px; margin-bottom: 20px;
+  }
+  .pdf-card {
+    flex: 1; background: #F8F9FA; border: 1px solid #E2E8F0;
+    border-left: 5px solid #1C3D4A; padding: 12px; border-radius: 4px;
+  }
+  .pdf-card-label { font-size: 11pt; color: #666; display: block; }
+  .pdf-card-val { font-size: 18pt; font-weight: bold; color: #1C3D4A; }
+  .pdf-table {
+    width: 100%; border-collapse: collapse; margin-top: 10px;
+  }
+  .pdf-table th, .pdf-table td {
+    border: 1px solid #CBD5E1; padding: 8px 12px; font-size: 11pt; text-align: left;
+  }
+  .pdf-table th { background-color: #1C3D4A; color: white; }
+</style>
+
+<!-- 3. แม่แบบเนื้อหาใน PDF -->
+<div id="pdf-template-wrapper">
+  <div id="pdf-content">
+    
+    <!-- สไลด์หน้าปก -->
+    <div class="pdf-slide">
+      <div class="pdf-corner-top"></div>
+      <div class="pdf-cover-title">ปริมาณรังสีในหัตถการรังสีร่วมรักษา</div>
+      <div class="pdf-cover-sub">รายงานสรุปประจำปี พ.ศ. 2568</div>
+      <div class="pdf-corner-bottom"></div>
+    </div>
+
+    <!-- สไลด์สรุปผล -->
+    <div class="pdf-slide">
+      <div class="pdf-header-bar">สรุปภาพรวมปริมาณรังสีสะสม</div>
+      
+      <div class="pdf-grid">
+        <div class="pdf-card">
+          <span class="pdf-card-label">จำนวน EXAM ทั้งหมด</span>
+          <span class="pdf-card-val" id="pdf-val-exam">1,484</span>
+        </div>
+        <div class="pdf-card">
+          <span class="pdf-card-label">ผู้ป่วย Ka,r ≥ 3 Gy</span>
+          <span class="pdf-card-val" id="pdf-val-over3">0</span>
+        </div>
+        <div class="pdf-card">
+          <span class="pdf-card-label">ค่า Ka,r สูงสุดที่พบ</span>
+          <span class="pdf-card-val" id="pdf-val-max">2.56 Gy</span>
+        </div>
+      </div>
+
+      <table class="pdf-table">
+        <thead>
+          <tr>
+            <th>ประเภทหัตถการ</th>
+            <th>เกณฑ์ DRLs ไทย (Gy·cm²)</th>
+            <th>สถานะการประเมิน</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>AVM Embolization</td>
+            <td>187</td>
+            <td>ผ่านเกณฑ์มาตรฐาน</td>
+          </tr>
+          <tr>
+            <td>Aneurysm Embolization</td>
+            <td>209</td>
+            <td>ผ่านเกณฑ์มาตรฐาน</td>
+          </tr>
+          <tr>
+            <td>TACE / Body IR</td>
+            <td>ติดตามตามมาตรฐาน</td>
+            <td>ผ่านเกณฑ์มาตรฐาน</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+</div>
+
+<!-- 4. คำสั่งระบบจับการคลิกปุ่ม "ดาวน์โหลด PDF" อัตโนมัติ -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    // ค้นหาปุ่มที่มีคำว่า "ดาวน์โหลด PDF" บนหน้าเว็บ
+    const buttons = Array.from(document.querySelectorAll('button'));
+    const pdfBtn = buttons.find(b => b.textContent.includes('ดาวน์โหลด PDF'));
+
+    if (pdfBtn) {
+      pdfBtn.addEventListener('click', function () {
+        const element = document.getElementById('pdf-content');
+        const opt = {
+          margin:       0,
+          filename:     'Radiation_Dose_Report_2068.pdf',
+          image:        { type: 'jpeg', quality: 0.98 },
+          html2canvas:  { scale: 2, useCORS: true },
+          jsPDF:        { unit: 'mm', format: 'a4', orientation: 'landscape' }
+        };
+
+        // สั่งสร้างไฟล์ PDF
+        html2pdf().set(opt).from(element).save();
+      });
+    }
+  });
+</script>
+<!-- ================= จบส่วน PDF Export ================= -->
 </body>
 </html>
