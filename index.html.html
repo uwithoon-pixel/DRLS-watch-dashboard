@@ -1,0 +1,1059 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dose Watch Dashboard — ปริมาณรังสีในหัตถการรังสีร่วมรักษา</title>
+
+<!-- React -->
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<!-- Babel standalone -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<!-- SheetJS for reading Excel -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- ExcelJS for generating formatted Excel with embedded charts/images -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
+<!-- Recharts (+ peer dep prop-types) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.10.3/Recharts.js"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #EEF2F4; }
+  body { font-family: 'Inter', -apple-system, sans-serif; color: #1A2733; }
+  button { font-family: inherit; }
+  input[type=date] { font-family: inherit; }
+  #root { min-height: 100vh; }
+  .print-report { display: none; }
+  @media print {
+    .no-print, .screen-only { display: none !important; }
+    .print-report { display: block !important; }
+    body { background: white; }
+    @page { size: A4 landscape; margin: 10mm; }
+  }
+  #boot-loading {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: #EEF2F4; font-family: 'Inter', sans-serif; color: #5B6B75; font-size: 14px;
+  }
+</style>
+</head>
+<body>
+
+<div id="boot-loading">กำลังโหลดแอปพลิเคชัน…</div>
+<div id="root"></div>
+
+<script type="text/plain" id="app-source">
+
+const { useState, useMemo, useCallback, useRef } = React;
+const {
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
+} = Recharts;
+
+// Reference DRL Values
+const DRLS_THAILAND = { "TACE": 226.0, "Cerebral Angiogram": 108.0, "AVM Embolization": 187.0, "Aneurysm Embolization": 209.0 };
+
+const INTL_REFS = {
+  "Venoplasty": {},
+  "PTA Leg": { USA: 181.0, France: 72.1, Spain: 170.1, Germany: 40.2, SIR: 94.1 },
+  "TACE": { Thailand: 226.0, Japan: 270.0, USA: 297.0, France: 250.0, Spain: 303.0, Germany: 230.0, SIR: 289.0 },
+  "Cerebral Angiogram": { Thailand: 108.0, France: 87.6, "South Korea": 101.1 },
+  "AVM Embolization": { Thailand: 187.0, USA: 281.0, France: 479.4, "South Korea": 412.6 },
+  "Aneurysm Embolization": { Thailand: 209.0, USA: 186.2, France: 339.7, Germany: 250.4, "South Korea": 200.6 },
+  "Stroke": { Germany: 180.2, "South Korea": 225.1 },
+};
+
+const REF_COLORS = {
+  Thailand: "#DC2626", Japan: "#94A3B8", USA: "#D4A017", France: "#3B6FB6",
+  Spain: "#5B9B5B", Germany: "#1E4F7A", SIR: "#9A5B2E", "South Korea": "#7C5FA8",
+};
+
+const PROC_ORDER = ["Venoplasty", "PTA Leg", "TACE", "Cerebral Angiogram", "AVM Embolization", "Aneurysm Embolization", "Stroke"];
+
+const MISIR_BLUE = "#2E7CB8";
+const CORAL = "#E8836F";
+const DRL_GOLD = "#F8CB7B";
+
+const THAI_MONTHS = { 1: "ม.ค.", 2: "ก.พ.", 3: "มี.ค.", 4: "เม.ย.", 5: "พ.ค.", 6: "มิ.ย.", 7: "ก.ค.", 8: "ส.ค.", 9: "ก.ย.", 10: "ต.ค.", 11: "พ.ย.", 12: "ธ.ค." };
+
+function toBuddhistYear(ceYear) { return ceYear + 543; }
+
+const CEREBRAL_ANGIOGRAM_EXACT = new Set([
+  "aneurysm", "avm", "direct ccf", "dural avf", "dural ccf", "tumor",
+  "carotid angiogram for stenosis", "stenosis/ occlusion, cerebral",
+  "negative sah, other",
+]);
+
+function classifyProcedure(procRaw) {
+  if (!procRaw) return null;
+  const rawStr = String(procRaw).trim();
+  const pl = rawStr.toLowerCase();
+
+  if (pl.includes("tace")) return "TACE";
+
+  const pClean = rawStr.replace(/,?\s*venogramArm/i, "").trim().replace(/,$/, "").trim();
+  const plClean = pClean.toLowerCase();
+
+  if (plClean.includes("avm embolization")) return "AVM Embolization";
+  if (plClean.includes("aneurysm coiling") || plClean.includes("aneurysm flow diverter") || plClean.includes("aneurysm stent assisted coiling")) return "Aneurysm Embolization";
+  if (plClean.includes("stroke")) return "Stroke";
+  if (plClean.includes("pta leg")) return "PTA Leg";
+  if (plClean.startsWith("ptv") || plClean.startsWith("venoplasty") || plClean.startsWith("f/u venoplasty") || plClean.startsWith("x-ray venoplasty")) return "Venoplasty";
+  if (plClean.includes("cerebral angiogram") || CEREBRAL_ANGIOGRAM_EXACT.has(plClean)) return "Cerebral Angiogram";
+
+  return "Other";
+}
+
+function excelDateToJSDate(val) {
+  if (val instanceof Date) return val;
+  if (typeof val === "number") {
+    const utcDays = Math.floor(val - 25569);
+    const utcMs = utcDays * 86400 * 1000;
+    return new Date(utcMs);
+  }
+  const d = new Date(val);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function median(arr) {
+  if (!arr || !arr.length) return null;
+  const s = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 !== 0 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+function processRawData(rows) {
+  const findKey = (obj, candidates) => {
+    const keys = Object.keys(obj);
+    for (const c of candidates) {
+      const hit = keys.find(k => k.trim().toLowerCase() === c.toLowerCase());
+      if (hit) return hit;
+    }
+    return null;
+  };
+  if (!rows.length) return { exams: [], warnings: ["ไม่พบข้อมูลในไฟล์"] };
+
+  const sample = rows[0];
+  const kA = findKey(sample, ["A#"]);
+  const kDate = findKey(sample, ["Date Performed"]);
+  const kProc = findKey(sample, ["Procedure"]);
+  const kDAP = findKey(sample, ["DAP (Total) Gy-cm2"]);
+  const kKar = findKey(sample, ["Reference Point Dose (Total) mGy"]);
+  const kMRN = findKey(sample, ["Patient MRN"]);
+  const kName = findKey(sample, ["Patient Name"]);
+  const kDesc = findKey(sample, ["Description"]);
+
+  const warnings = [];
+  if (!kA || !kDate || !kProc || !kDAP) {
+    warnings.push("ไม่พบคอลัมน์ที่จำเป็น (A#, Date Performed, Procedure, DAP (Total) Gy-cm2) กรุณาตรวจสอบไฟล์");
+    return { exams: [], warnings };
+  }
+
+  let parsed = rows.map((r, idx) => {
+    const dateVal = excelDateToJSDate(r[kDate]);
+    const dap = parseFloat(r[kDAP]);
+    const kar = kKar ? parseFloat(r[kKar]) : NaN;
+    return {
+      _idx: idx,
+      examId: r[kA] != null ? String(r[kA]) : null,
+      date: dateVal,
+      dateStr: dateVal ? dateVal.toISOString().slice(0, 10) : null,
+      procedureRaw: r[kProc],
+      category: classifyProcedure(r[kProc]),
+      dap: isNaN(dap) ? null : dap,
+      kar_mGy: isNaN(kar) ? null : kar,
+      kar_Gy: isNaN(kar) ? null : kar / 1000,
+      mrn: kMRN ? String(r[kMRN] ?? "") : "",
+      patientName: kName ? String(r[kName] ?? "") : "",
+      description: kDesc ? String(r[kDesc] ?? "") : "",
+      _nonNullCount: Object.values(r).filter(v => v !== null && v !== undefined && v !== "").length,
+    };
+  }).filter(r => r.examId && r.date);
+
+  const byKey = new Map();
+  for (const r of parsed) {
+    const key = `${r.examId}__${r.dateStr}`;
+    const existing = byKey.get(key);
+    if (!existing || r._nonNullCount > existing._nonNullCount) {
+      byKey.set(key, r);
+    }
+  }
+  const deduped = Array.from(byKey.values());
+  const withDap = deduped.filter(r => r.dap !== null);
+
+  return {
+    exams: withDap,
+    warnings,
+    totalRaw: rows.length,
+    totalDeduped: withDap.length,
+  };
+}
+
+function monthLabel(ym) {
+  const [y, m] = ym.split("-").map(Number);
+  const by = toBuddhistYear(y) % 100;
+  return `${THAI_MONTHS[m]}-${by}`;
+}
+
+// Function to render chart to PNG DataURL for embedding into Excel
+async function createChartImageBase64(title, data, refKeys) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 900;
+  canvas.height = 450;
+  const ctx = canvas.getContext("2d");
+
+  // Background
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Title
+  ctx.font = "bold 22px 'Inter', sans-serif";
+  ctx.fillStyle = "#0F3B4D";
+  ctx.textAlign = "center";
+  ctx.fillText(`P50 DAP - ${title}`, canvas.width / 2, 40);
+
+  if (!data || data.length === 0) return canvas.toDataURL("image/png");
+
+  const paddingLeft = 70;
+  const paddingRight = 160;
+  const paddingTop = 70;
+  const paddingBottom = 80;
+  const plotWidth = canvas.width - paddingLeft - paddingRight;
+  const plotHeight = canvas.height - paddingTop - paddingBottom;
+
+  // Find max Y
+  let maxY = 10;
+  data.forEach(d => {
+    if (d.MiSIR && d.MiSIR > maxY) maxY = d.MiSIR;
+    refKeys.forEach(k => { if (d[k] && d[k] > maxY) maxY = d[k]; });
+  });
+  maxY = Math.ceil(maxY * 1.15);
+
+  // Grid lines & Y Axis Labels
+  ctx.strokeStyle = "#EEF2F4";
+  ctx.lineWidth = 1;
+  ctx.font = "12px sans-serif";
+  ctx.fillStyle = "#5B6B75";
+  ctx.textAlign = "right";
+
+  const steps = 5;
+  for (let i = 0; i <= steps; i++) {
+    const yVal = (maxY / steps) * i;
+    const yPos = paddingTop + plotHeight - (i / steps) * plotHeight;
+    ctx.beginPath();
+    ctx.moveTo(paddingLeft, yPos);
+    ctx.lineTo(paddingLeft + plotWidth, yPos);
+    ctx.stroke();
+    ctx.fillText(yVal.toFixed(2), paddingLeft - 10, yPos + 4);
+  }
+
+  // Y Axis Label
+  ctx.save();
+  ctx.translate(20, canvas.height / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.font = "bold 13px sans-serif";
+  ctx.fillText("DAP (Gy cm2)", 0, 0);
+  ctx.restore();
+
+  // X Axis & Line Plots
+  const stepX = data.length > 1 ? plotWidth / (data.length - 1) : plotWidth / 2;
+
+  // Plot Reference Lines
+  refKeys.forEach(rk => {
+    ctx.strokeStyle = REF_COLORS[rk] || "#888888";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    data.forEach((d, idx) => {
+      const x = paddingLeft + (data.length === 1 ? plotWidth / 2 : idx * stepX);
+      const val = d[rk] !== undefined ? d[rk] : INTL_REFS[title]?.[rk];
+      if (val !== undefined) {
+        const y = paddingTop + plotHeight - (val / maxY) * plotHeight;
+        if (idx === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+  });
+
+  // Plot MiSIR Line
+  ctx.strokeStyle = MISIR_BLUE;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  data.forEach((d, idx) => {
+    const x = paddingLeft + (data.length === 1 ? plotWidth / 2 : idx * stepX);
+    if (d.MiSIR !== null) {
+      const y = paddingTop + plotHeight - (d.MiSIR / maxY) * plotHeight;
+      if (idx === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+  });
+  ctx.stroke();
+
+  // Plot Points & X Labels
+  data.forEach((d, idx) => {
+    const x = paddingLeft + (data.length === 1 ? plotWidth / 2 : idx * stepX);
+
+    // X Axis Label
+    ctx.save();
+    ctx.translate(x, paddingTop + plotHeight + 15);
+    ctx.rotate(-Math.PI / 4);
+    ctx.font = "11px sans-serif";
+    ctx.fillStyle = "#1A2733";
+    ctx.textAlign = "right";
+    ctx.fillText(d.month, 0, 0);
+    ctx.restore();
+
+    // MiSIR Point
+    if (d.MiSIR !== null) {
+      const y = paddingTop + plotHeight - (d.MiSIR / maxY) * plotHeight;
+      ctx.fillStyle = MISIR_BLUE;
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+
+  // Legend
+  const legendX = canvas.width - paddingRight + 20;
+  let legendY = paddingTop + 10;
+  ctx.font = "12px sans-serif";
+  ctx.textAlign = "left";
+
+  // MiSIR Legend Item
+  ctx.strokeStyle = MISIR_BLUE;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(legendX, legendY);
+  ctx.lineTo(legendX + 20, legendY);
+  ctx.stroke();
+  ctx.fillStyle = MISIR_BLUE;
+  ctx.beginPath();
+  ctx.arc(legendX + 10, legendY, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#1A2733";
+  ctx.fillText("MiSIR", legendX + 28, legendY + 4);
+  legendY += 24;
+
+  // Ref Legend Items
+  refKeys.forEach(rk => {
+    ctx.strokeStyle = REF_COLORS[rk] || "#888888";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 3]);
+    ctx.beginPath();
+    ctx.moveTo(legendX, legendY);
+    ctx.lineTo(legendX + 20, legendY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#1A2733";
+    ctx.fillText(rk, legendX + 28, legendY + 4);
+    legendY += 22;
+  });
+
+  return canvas.toDataURL("image/png");
+}
+
+const Icon = ({ path, size = 16, color = "currentColor", strokeWidth = 2 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color}
+    strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+    <path d={path} />
+  </svg>
+);
+const IconUpload = (p) => <Icon {...p} path="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />;
+const IconAlert = (p) => <Icon {...p} path="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" />;
+const IconSheet = (p) => <Icon {...p} path="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h8M8 9h1" />;
+const IconFile = (p) => <Icon {...p} path="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M9 15h6M9 11h1" />;
+const IconActivity = (p) => <Icon {...p} path="M22 12h-4l-3 9L9 3l-3 9H2" />;
+const IconFilter = (p) => <Icon {...p} path="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />;
+const IconArrowRight = (p) => <Icon {...p} path="M5 12h14M12 5l7 7-7 7" />;
+
+function StatCard({ label, value, tone = "default", icon: IconComp }) {
+  const toneMap = {
+    default: { bg: "#F8FAFB", border: "#E2E8ED", text: "#0F3B4D" },
+    alert: { bg: "#FEF2F2", border: "#FCA5A5", text: "#B91C1C" },
+    good: { bg: "#F0FBF7", border: "#99E0C9", text: "#0F6B54" },
+  };
+  const t = toneMap[tone];
+  return (
+    <div style={{ background: t.bg, border: `1px solid ${t.border}`, borderRadius: 10, padding: "16px 18px", flex: 1, minWidth: 160 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        {IconComp && <IconComp size={15} color={t.text} strokeWidth={2} />}
+        <span style={{ fontSize: 11.5, fontWeight: 600, color: "#5B6B75", letterSpacing: 0.3, textTransform: "uppercase" }}>{label}</span>
+      </div>
+      <div style={{ fontSize: 26, fontWeight: 700, color: t.text, fontFamily: "'IBM Plex Mono', monospace", lineHeight: 1.1 }}>{value}</div>
+    </div>
+  );
+}
+
+function Pill({ children, active, onClick }) {
+  return (
+    <button onClick={onClick} style={{
+      padding: "6px 13px", borderRadius: 20, fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+      border: active ? "1px solid #0F3B4D" : "1px solid #DDE4E8",
+      background: active ? "#0F3B4D" : "#fff",
+      color: active ? "#fff" : "#5B6B75",
+      transition: "all .15s",
+    }}>
+      {children}
+    </button>
+  );
+}
+
+const btnStyle = (bg) => ({
+  display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", borderRadius: 8,
+  background: bg, color: "#fff", border: "none", fontSize: 13, fontWeight: 600, cursor: "pointer",
+});
+const dateInputStyle = { border: "1px solid #DDE4E8", borderRadius: 7, padding: "6px 10px", fontSize: 13, color: "#1A2733" };
+
+function App() {
+  const [exams, setExams] = useState([]);
+  const [fileName, setFileName] = useState(null);
+  const [loadState, setLoadState] = useState("idle");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [warnings, setWarnings] = useState([]);
+  const [threshold, setThreshold] = useState(3);
+  const [selectedProc, setSelectedProc] = useState("TACE");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [showIntlRefs, setShowIntlRefs] = useState(true);
+  const [activeTab, setActiveTab] = useState("overview");
+  const [viewMode, setViewMode] = useState("upload"); // 'upload' | 'dashboard'
+  const fileInputRef = useRef(null);
+
+  const handleFile = useCallback((file) => {
+    setLoadState("loading");
+    setErrorMsg("");
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = new Uint8Array(evt.target.result);
+        const wb = XLSX.read(data, { type: "array", cellDates: true });
+        const sheetName = wb.SheetNames[0];
+        const sheet = wb.Sheets[sheetName];
+
+        let maxR = 0, maxC = 0, minR = Infinity, minC = Infinity, cellCount = 0;
+        for (const addr in sheet) {
+          if (addr[0] === "!") continue;
+          cellCount++;
+          const dec = XLSX.utils.decode_cell(addr);
+          if (dec.r > maxR) maxR = dec.r;
+          if (dec.c > maxC) maxC = dec.c;
+          if (dec.r < minR) minR = dec.r;
+          if (dec.c < minC) minC = dec.c;
+        }
+        if (cellCount > 0) {
+          sheet["!ref"] = XLSX.utils.encode_range({ s: { r: minR, c: minC }, e: { r: maxR, c: maxC } });
+        }
+        const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
+        const { exams: processed, warnings: w, totalRaw, totalDeduped } = processRawData(rows);
+        if (!processed.length) {
+          setLoadState("error");
+          setErrorMsg("ไม่พบข้อมูลที่อ่านได้ในไฟล์ กรุณาตรวจสอบรูปแบบคอลัมน์");
+          return;
+        }
+        setExams(processed);
+        setWarnings(w.concat([`อ่านข้อมูล ${totalRaw} แถว → เหลือ ${totalDeduped} exam หลังตัดรายการซ้ำ`]));
+        setFileName(file.name);
+        setLoadState("ready");
+        const dates = processed.map(e => e.dateStr).sort();
+        setDateFrom(dates[0]);
+        setDateTo(dates[dates.length - 1]);
+        setViewMode("dashboard");
+      } catch (err) {
+        setLoadState("error");
+        setErrorMsg("ไม่สามารถอ่านไฟล์ได้: " + err.message);
+      }
+    };
+    reader.onerror = () => { setLoadState("error"); setErrorMsg("เกิดข้อผิดพลาดขณะอ่านไฟล์"); };
+    reader.readAsArrayBuffer(file);
+  }, []);
+
+  const onDrop = useCallback((e) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  }, [handleFile]);
+
+  // Dynamic filter based on selected date range
+  const filteredExams = useMemo(() => {
+    if (!dateFrom || !dateTo) return exams;
+    return exams.filter(e => e.dateStr >= dateFrom && e.dateStr <= dateTo);
+  }, [exams, dateFrom, dateTo]);
+
+  const exceedances = useMemo(() => {
+    return filteredExams
+      .filter(e => e.kar_Gy !== null && e.kar_Gy >= threshold)
+      .sort((a, b) => b.kar_Gy - a.kar_Gy);
+  }, [filteredExams, threshold]);
+
+  // Aggregate monthly data purely from filteredExams
+  const combinedMonthly = useMemo(() => {
+    const out = {};
+    const catGrouped = {};
+
+    for (const e of filteredExams) {
+      if (!e.category || !PROC_ORDER.includes(e.category)) continue;
+      const ym = e.dateStr.slice(0, 7);
+      catGrouped[e.category] = catGrouped[e.category] || {};
+      catGrouped[e.category][ym] = catGrouped[e.category][ym] || [];
+      catGrouped[e.category][ym].push(e.dap);
+    }
+
+    for (const proc of PROC_ORDER) {
+      const yms = Object.keys(catGrouped[proc] || {}).sort();
+      const rows = yms.map(ym => {
+        const label = monthLabel(ym);
+        const med = median(catGrouped[proc][ym]);
+        const row = {
+          month: label,
+          ym: ym,
+          MiSIR: med !== null ? Number(med.toFixed(2)) : null,
+          n: catGrouped[proc][ym].length
+        };
+        const refs = INTL_REFS[proc] || {};
+        for (const [refName, refVal] of Object.entries(refs)) {
+          row[refName] = refVal;
+        }
+        return row;
+      });
+      out[proc] = rows;
+    }
+    return out;
+  }, [filteredExams]);
+
+  // Aggregate yearly data purely from filteredExams
+  const combinedYearly = useMemo(() => {
+    const out = {};
+    const catYearGrouped = {};
+
+    for (const e of filteredExams) {
+      if (!e.category || !PROC_ORDER.includes(e.category)) continue;
+      const yrCE = e.dateStr.slice(0, 4);
+      const yrBE = String(toBuddhistYear(Number(yrCE)));
+      catYearGrouped[e.category] = catYearGrouped[e.category] || {};
+      catYearGrouped[e.category][yrBE] = catYearGrouped[e.category][yrBE] || [];
+      catYearGrouped[e.category][yrBE].push(e.dap);
+    }
+
+    for (const proc of PROC_ORDER) {
+      const yrs = Object.keys(catYearGrouped[proc] || {}).sort();
+      const hasDRL = DRLS_THAILAND.hasOwnProperty(proc);
+      const rows = yrs.map(yr => {
+        const med = median(catYearGrouped[proc][yr]);
+        return {
+          year: `พ.ศ.${yr}`,
+          MiSIR: med !== null ? Number(med.toFixed(2)) : null,
+          DRLs: hasDRL ? DRLS_THAILAND[proc] : null,
+        };
+      });
+      out[proc] = rows;
+    }
+    return out;
+  }, [filteredExams]);
+
+  const chartData = combinedMonthly[selectedProc] || [];
+  const refNames = Object.keys(INTL_REFS[selectedProc] || {});
+  const drlValue = DRLS_THAILAND[selectedProc];
+
+  const overallStats = useMemo(() => {
+    const procCount = {};
+    for (const e of filteredExams) {
+      if (!e.category) continue;
+      procCount[e.category] = (procCount[e.category] || 0) + 1;
+    }
+    return {
+      total: filteredExams.length,
+      maxKar: filteredExams.reduce((m, e) => (e.kar_Gy !== null && e.kar_Gy > m ? e.kar_Gy : m), 0),
+      procCount,
+    };
+  }, [filteredExams]);
+
+  // Enhanced Excel Export matching design in Image 2
+  const exportExcel = useCallback(async () => {
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "Dose Watch Dashboard";
+
+    // 1. README Sheet
+    const wsReadme = workbook.addWorksheet("README");
+    wsReadme.addRow(["รายงานปริมาณรังสีในหัตถการรังสีร่วมรักษา (สร้างจากแดชบอร์ด)"]);
+    wsReadme.addRow([`ไฟล์ต้นฉบับ: ${fileName || "-"}`]);
+    wsReadme.addRow([`ช่วงเวลาข้อมูลที่เลือก: ${dateFrom || "-"} ถึง ${dateTo || "-"}`]);
+    wsReadme.addRow([]);
+    wsReadme.addRow(["Sheet", "เนื้อหา"]);
+    wsReadme.addRow(["Exceedances", `รายชื่อผู้ป่วยที่ Ka,r ≥ ${threshold} Gy`]);
+    PROC_ORDER.forEach(p => {
+      wsReadme.addRow([`Monthly_${p}`, `ข้อมูล P50 DAP รายเดือน และกราฟเปรียบเทียบ - ${p}`]);
+    });
+    wsReadme.addRow(["Overview", "เปรียบเทียบทุกหัตถการกับ DRLs"]);
+
+    // 2. Exceedances Sheet
+    const wsExc = workbook.addWorksheet("Exceedances");
+    wsExc.addRow(["HN", "ชื่อผู้ป่วย", "วันที่", "หัตถการ", "Ka,r (Gy)", "DAP (Gy·cm2)"]);
+    const headerRow = wsExc.getRow(1);
+    headerRow.font = { bold: true, color: { argb: "FFFFFF" } };
+    headerRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "1E4F7A" } };
+
+    exceedances.forEach(e => {
+      wsExc.addRow([e.mrn, e.patientName, e.dateStr, e.procedureRaw, Number(e.kar_Gy.toFixed(2)), Number(e.dap.toFixed(2))]);
+    });
+
+    // 3. Monthly Sheets with Formatted Tables & Embedded Charts (Image 2 style)
+    for (const proc of PROC_ORDER) {
+      const wsName = `Monthly_${proc}`.slice(0, 31);
+      const ws = workbook.addWorksheet(wsName);
+
+      const refs = INTL_REFS[proc] || {};
+      const refKeys = Object.keys(refs);
+      const monthData = combinedMonthly[proc] || [];
+
+      // Title rows
+      const titleCell = ws.getCell("A1");
+      titleCell.value = "P50 DAP รายเดือน";
+      titleCell.font = { name: "Inter", size: 16, bold: true, color: { argb: "0F3B4D" } };
+
+      const subCell = ws.getCell("A2");
+      subCell.value = `หน่วย: Gy·cm2 | ข้อมูลช่วงเวลา (${dateFrom} ถึง ${dateTo})`;
+      subCell.font = { name: "Inter", size: 10, italic: true, color: { argb: "5B6B75" } };
+
+      // Table Headers
+      const headers = ["เดือน/ปี", "MiSIR", ...refKeys];
+      const hRow = ws.getRow(4);
+      headers.forEach((h, colIdx) => {
+        const cell = hRow.getCell(colIdx + 1);
+        cell.value = h;
+        cell.font = { bold: true, color: { argb: "FFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "1E4F7A" } };
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+      });
+
+      // Data Rows
+      monthData.forEach((r, rowIdx) => {
+        const row = ws.getRow(5 + rowIdx);
+        row.getCell(1).value = r.month;
+        row.getCell(1).alignment = { horizontal: "center" };
+
+        const misirCell = row.getCell(2);
+        misirCell.value = r.MiSIR;
+        misirCell.numFmt = "0.00";
+        misirCell.font = { bold: true };
+
+        refKeys.forEach((rk, kIdx) => {
+          const c = row.getCell(3 + kIdx);
+          c.value = refs[rk];
+          c.numFmt = "0.00";
+        });
+      });
+
+      // Render chart image and embed into Excel sheet
+      const chartBase64 = await createChartImageBase64(proc, monthData, refKeys);
+      const imageId = workbook.addImage({
+        base64: chartBase64,
+        extension: "png",
+      });
+
+      ws.addImage(imageId, {
+        tl: { col: refKeys.length + 3, row: 3 },
+        ext: { width: 680, height: 350 }
+      });
+
+      // Adjust Column Widths
+      ws.getColumn(1).width = 14;
+      ws.getColumn(2).width = 12;
+      refKeys.forEach((_, idx) => { ws.getColumn(3 + idx).width = 12; });
+    }
+
+    // 4. Overview Sheet
+    const wsOv = workbook.addWorksheet("Overview");
+    wsOv.addRow(["หัตถการ", "MiSIR (DAP Median)", "DRLs (ไทย)"]);
+    const ovHRow = wsOv.getRow(1);
+    ovHRow.font = { bold: true, color: { argb: "FFFFFF" } };
+    ovHRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "1E4F7A" } };
+
+    PROC_ORDER.forEach(p => {
+      const sub = filteredExams.filter(e => e.category === p);
+      const med = median(sub.map(e => e.dap));
+      wsOv.addRow([p, med !== null ? Number(med.toFixed(2)) : null, DRLS_THAILAND[p] ?? null]);
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `dose_report_${dateFrom}_to_${dateTo}.xlsx`;
+    link.click();
+  }, [exceedances, combinedMonthly, fileName, dateFrom, dateTo, threshold, filteredExams]);
+
+  const exportPDF = useCallback(() => { window.print(); }, []);
+
+  const hasData = exams.length > 0;
+
+  return (
+    <div style={{ fontFamily: "'Inter', -apple-system, sans-serif", background: "#EEF2F4", minHeight: "100vh", color: "#1A2733", padding: "0 0 40px 0" }}>
+
+      {/* ============ PRINT-ONLY REPORT ============ */}
+      <div className="print-report">
+        <div style={{ fontFamily: "'Inter', sans-serif", color: "#1A2733" }}>
+          <div style={{ pageBreakAfter: "always", height: "100%", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", minHeight: "180mm" }}>
+            <div style={{ fontSize: 26, fontWeight: 800, textAlign: "center", maxWidth: 700 }}>
+              ปริมาณรังสีที่ผู้ป่วยได้รับจากการทำหัตถการรังสีร่วมรักษา
+            </div>
+            <div style={{ fontSize: 16, color: "#5B6B75", marginTop: 8 }}>ข้อมูลเฉพาะช่วงเวลาที่เลือก</div>
+            <div style={{ fontSize: 12, color: "#8494A0", marginTop: 30 }}>
+              ช่วงเวลา: {dateFrom} ถึง {dateTo} · สร้างจาก Dose Watch Dashboard
+            </div>
+          </div>
+
+          {PROC_ORDER.map((proc) => {
+            const monthData = combinedMonthly[proc] || [];
+            const yearData = combinedYearly[proc] || [];
+            const refs = INTL_REFS[proc] || {};
+            const rnames = Object.keys(refs);
+            const drl = DRLS_THAILAND[proc];
+            const hasDRL = DRLS_THAILAND.hasOwnProperty(proc);
+            return (
+              <div key={proc} style={{ pageBreakAfter: "always", padding: "16px 24px" }}>
+                <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 2, borderBottom: "2px solid #0F3B4D", paddingBottom: 6 }}>
+                  P50 DAP รายเดือน — {proc}
+                </div>
+                <div style={{ fontSize: 11, color: "#8494A0", marginBottom: 8 }}>
+                  {drl ? `DRLs ประเทศไทย = ${drl.toFixed(2)} Gy·cm2` : "ไม่มีค่า DRLs อ้างอิงสำหรับหัตถการนี้"}
+                </div>
+                <div style={{ width: "100%", height: 260 }}>
+                  <LineChart width={1000} height={260} data={monthData} margin={{ top: 12, right: 20, left: 0, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#EEF2F4" vertical={false} />
+                    <XAxis dataKey="month" tick={{ fontSize: 8 }} interval={0} angle={-35} textAnchor="end" height={50} />
+                    <YAxis tick={{ fontSize: 10 }} />
+                    <Tooltip />
+                    <Legend wrapperStyle={{ fontSize: 10 }} />
+                    {rnames.map(rn => (
+                      <Line key={rn} type="monotone" dataKey={rn} stroke={REF_COLORS[rn] || "#999"} strokeDasharray="5 4" dot={false} strokeWidth={1.2} isAnimationActive={false} />
+                    ))}
+                    <Line type="monotone" dataKey="MiSIR" stroke={MISIR_BLUE} strokeWidth={2} dot={{ r: 2.5 }} isAnimationActive={false} />
+                  </LineChart>
+                </div>
+
+                <div style={{ fontSize: 15, fontWeight: 700, marginTop: 16, marginBottom: 2, borderBottom: "2px solid #0F3B4D", paddingBottom: 6 }}>
+                  เปรียบเทียบรายปี — {proc}
+                </div>
+                <div style={{ width: "100%", height: 240 }}>
+                  <BarChart width={700} height={240} data={yearData} margin={{ top: 12, right: 20, left: 0, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#EEF2F4" vertical={false} />
+                    <XAxis dataKey="year" tick={{ fontSize: 10 }} />
+                    <YAxis tick={{ fontSize: 10 }} />
+                    <Tooltip />
+                    <Legend wrapperStyle={{ fontSize: 10 }} />
+                    <Bar dataKey="MiSIR" fill={CORAL} isAnimationActive={false} />
+                    {hasDRL && <Bar dataKey="DRLs" fill={DRL_GOLD} isAnimationActive={false} />}
+                  </BarChart>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ============ SCREEN DASHBOARD ============ */}
+      <div className="screen-only">
+        <div style={{ background: "linear-gradient(135deg, #0F3B4D 0%, #164E63 100%)", padding: "28px 32px 24px", color: "#fff" }}>
+          <div style={{ maxWidth: 1280, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ width: 34, height: 34, borderRadius: 8, background: "rgba(255,255,255,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <IconActivity size={19} strokeWidth={2.4} color="#7FD4C1" />
+              </div>
+              <div>
+                <div style={{ fontSize: 19, fontWeight: 700, letterSpacing: -0.2 }}>Dose Watch Dashboard</div>
+                <div style={{ fontSize: 12.5, color: "#A9C4CE" }}>ปริมาณรังสีในหัตถการรังสีร่วมรักษา — Neuro-IR / Body IR</div>
+              </div>
+            </div>
+
+            {/* Navigation toggle button */}
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                onClick={() => setViewMode("upload")}
+                style={{
+                  background: viewMode === "upload" ? "rgba(255,255,255,0.25)" : "transparent",
+                  color: "#fff", border: "1px solid rgba(255,255,255,0.3)",
+                  padding: "7px 14px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+                  display: "flex", alignItems: "center", gap: 6
+                }}
+              >
+                <IconUpload size={14} color="#fff" /> หน้าเพิ่มไฟล์
+              </button>
+              <button
+                onClick={() => setViewMode("dashboard")}
+                style={{
+                  background: viewMode === "dashboard" ? "#7FD4C1" : "transparent",
+                  color: viewMode === "dashboard" ? "#0F3B4D" : "#fff",
+                  border: viewMode === "dashboard" ? "none" : "1px solid rgba(255,255,255,0.3)",
+                  padding: "7px 14px", borderRadius: 8, fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+                  display: "flex", alignItems: "center", gap: 6
+                }}
+              >
+                <IconActivity size={14} color={viewMode === "dashboard" ? "#0F3B4D" : "#fff"} /> หน้าแดชบอร์ด <IconArrowRight size={13} color={viewMode === "dashboard" ? "#0F3B4D" : "#fff"} />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ maxWidth: 1280, margin: "0 auto", padding: "0 32px" }}>
+
+          {/* VIEW 1: UPLOAD PAGE */}
+          {viewMode === "upload" && (
+            <div style={{ marginTop: 28 }}>
+              <div
+                onDrop={onDrop}
+                onDragOver={(e) => e.preventDefault()}
+                style={{ border: "2px dashed #B8C6CD", borderRadius: 14, background: "#fff", padding: "56px 24px", textAlign: "center", cursor: "pointer" }}
+                onClick={() => fileInputRef.current && fileInputRef.current.click()}
+              >
+                <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
+                  onChange={(e) => e.target.files && e.target.files[0] && handleFile(e.target.files[0])} />
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
+                  <div style={{ width: 56, height: 56, borderRadius: 14, background: "#EAF3F5", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <IconUpload size={26} color="#0F3B4D" strokeWidth={2} />
+                  </div>
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: "#0F3B4D", marginBottom: 6 }}>
+                  {loadState === "loading" ? "กำลังประมวลผล..." : "ลากไฟล์ Excel มาวาง หรือคลิกเพื่อเลือกไฟล์"}
+                </div>
+                <div style={{ fontSize: 13, color: "#7C8B95" }}>รองรับไฟล์ .xlsx จาก Dose Report (ต้องมีคอลัมน์ A#, Date Performed, Procedure, DAP (Total) Gy-cm2)</div>
+                {loadState === "error" && (
+                  <div style={{ marginTop: 16, color: "#B91C1C", fontSize: 13.5, fontWeight: 600 }}>{errorMsg}</div>
+                )}
+              </div>
+
+              {/* Direct Dashboard Link */}
+              <div style={{ marginTop: 20, textAlign: "center", background: "#fff", borderRadius: 12, padding: "20px", border: "1px solid #E2E8ED" }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#0F3B4D", marginBottom: 8 }}>
+                  {hasData ? `ข้อมูลปัจจุบัน: ${fileName} (${exams.length.toLocaleString()} รายการ)` : "ยังไม่มีข้อมูลอัปโหลด หรือต้องการดูแดชบอร์ด"}
+                </div>
+                <button
+                  onClick={() => setViewMode("dashboard")}
+                  style={{
+                    background: "#0F3B4D", color: "#fff", border: "none", padding: "10px 20px",
+                    borderRadius: 8, fontSize: 13.5, fontWeight: 600, cursor: "pointer",
+                    display: "inline-flex", alignItems: "center", gap: 8
+                  }}
+                >
+                  ไปยังหน้าแดชบอร์ด <IconArrowRight size={16} color="#fff" />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* VIEW 2: DASHBOARD PAGE */}
+          {viewMode === "dashboard" && (
+            <React.Fragment>
+              {!hasData ? (
+                <div style={{ marginTop: 30, background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: 50, textAlign: "center" }}>
+                  <IconAlert size={36} color="#D4A017" />
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "#0F3B4D", marginTop: 12 }}>ยังไม่มีข้อมูลสำหรับแสดงผล</div>
+                  <div style={{ fontSize: 13, color: "#7C8B95", marginTop: 4, marginBottom: 20 }}>กรุณาอัปโหลดไฟล์ Excel ในหน้าหลักก่อน</div>
+                  <button
+                    onClick={() => setViewMode("upload")}
+                    style={{ background: "#0F3B4D", color: "#fff", border: "none", padding: "9px 18px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+                  >
+                    ไปหน้าเพิ่มไฟล์
+                  </button>
+                </div>
+              ) : (
+                <React.Fragment>
+                  <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, flexWrap: "wrap", gap: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <IconSheet size={16} color="#5B6B75" />
+                      <span style={{ fontSize: 13, color: "#5B6B75" }}>{fileName}</span>
+                      <button onClick={() => setViewMode("upload")} style={{ fontSize: 12, color: "#0F3B4D", background: "none", border: "none", textDecoration: "underline", cursor: "pointer" }}>เปลี่ยนไฟล์</button>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button onClick={exportExcel} style={btnStyle("#0F6B54")}><IconSheet size={14} /> ดาวน์โหลด Excel</button>
+                      <button onClick={exportPDF} style={btnStyle("#0F3B4D")}><IconFile size={14} /> ดาวน์โหลด PDF</button>
+                    </div>
+                  </div>
+
+                  {warnings.length > 0 && (
+                    <div className="no-print" style={{ marginTop: 10, fontSize: 12, color: "#8494A0" }}>
+                      {warnings.map((w, i) => <div key={i}>· {w}</div>)}
+                    </div>
+                  )}
+
+                  <div className="no-print" style={{ marginTop: 18, background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: "14px 18px", display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <IconFilter size={14} color="#5B6B75" />
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: "#5B6B75" }}>ช่วงเวลา</span>
+                    </div>
+                    <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={dateInputStyle} />
+                    <span style={{ color: "#B8C6CD" }}>—</span>
+                    <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={dateInputStyle} />
+                    <div style={{ width: 1, height: 24, background: "#E2E8ED" }} />
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: "#5B6B75" }}>เกณฑ์ Ka,r ≥</span>
+                      <input type="number" step="0.1" value={threshold} onChange={(e) => setThreshold(parseFloat(e.target.value) || 0)}
+                        style={{ ...dateInputStyle, width: 64, fontFamily: "'IBM Plex Mono', monospace" }} />
+                      <span style={{ fontSize: 12.5, color: "#5B6B75" }}>Gy</span>
+                    </div>
+                  </div>
+
+                  <div className="no-print" style={{ display: "flex", gap: 8, marginTop: 18 }}>
+                    <Pill active={activeTab === "overview"} onClick={() => setActiveTab("overview")}>ภาพรวม & ผู้ป่วยเกินเกณฑ์</Pill>
+                    <Pill active={activeTab === "chart"} onClick={() => setActiveTab("chart")}>กราฟ DRLs รายเดือน</Pill>
+                  </div>
+
+                  {activeTab === "overview" && (
+                    <div style={{ marginTop: 18 }}>
+                      <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+                        <StatCard label="Exam ทั้งหมดในช่วงเวลา" value={overallStats.total.toLocaleString()} icon={IconActivity} />
+                        <StatCard label={`ผู้ป่วยเกิน ${threshold} Gy`} value={exceedances.length} tone={exceedances.length > 0 ? "alert" : "good"} icon={IconAlert} />
+                        <StatCard label="Ka,r สูงสุดที่พบ" value={overallStats.maxKar.toFixed(2) + " Gy"} tone={overallStats.maxKar >= threshold ? "alert" : "good"} />
+                      </div>
+
+                      <div style={{ marginTop: 22, background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", overflow: "hidden" }}>
+                        <div style={{ padding: "16px 20px", borderBottom: "1px solid #E2E8ED", display: "flex", alignItems: "center", gap: 8 }}>
+                          <IconAlert size={16} color="#B91C1C" />
+                          <span style={{ fontWeight: 700, fontSize: 14.5 }}>ผู้ป่วยที่ได้รับ Ka,r ≥ {threshold} Gy</span>
+                          <span style={{ fontSize: 12.5, color: "#8494A0" }}>({exceedances.length} ราย)</span>
+                        </div>
+                        {exceedances.length === 0 ? (
+                          <div style={{ padding: 40, textAlign: "center", color: "#8494A0", fontSize: 13.5 }}>ไม่พบผู้ป่วยที่มีค่า Ka,r เกินเกณฑ์ที่กำหนดในช่วงเวลานี้</div>
+                        ) : (
+                          <div style={{ overflowX: "auto" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                              <thead>
+                                <tr style={{ background: "#F8FAFB", textAlign: "left" }}>
+                                  {["HN", "ชื่อผู้ป่วย", "วันที่", "หัตถการ", "Ka,r (Gy)", "DAP (Gy·cm2)"].map(h => (
+                                    <th key={h} style={{ padding: "10px 16px", fontWeight: 600, color: "#5B6B75", fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.3, borderBottom: "1px solid #E2E8ED" }}>{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {exceedances.map((e, i) => (
+                                  <tr key={i} style={{ borderBottom: "1px solid #EEF2F4" }}>
+                                    <td style={{ padding: "10px 16px", fontFamily: "'IBM Plex Mono', monospace" }}>{e.mrn || "-"}</td>
+                                    <td style={{ padding: "10px 16px" }}>{e.patientName || "-"}</td>
+                                    <td style={{ padding: "10px 16px", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5 }}>{e.dateStr}</td>
+                                    <td style={{ padding: "10px 16px" }}>{e.procedureRaw}</td>
+                                    <td style={{ padding: "10px 16px", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: e.kar_Gy >= 5 ? "#B91C1C" : "#C2410C" }}>{e.kar_Gy.toFixed(2)}</td>
+                                    <td style={{ padding: "10px 16px", fontFamily: "'IBM Plex Mono', monospace", color: "#5B6B75" }}>{e.dap.toFixed(2)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ marginTop: 18, background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: "16px 20px" }}>
+                        <div style={{ fontWeight: 700, fontSize: 14.5, marginBottom: 12 }}>จำนวน exam ต่อหัตถการ</div>
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                          {PROC_ORDER.map(p => (
+                            <div key={p} style={{ background: "#F8FAFB", borderRadius: 8, padding: "8px 14px", fontSize: 12.5 }}>
+                              <span style={{ color: "#5B6B75" }}>{p}</span>{" "}
+                              <span style={{ fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace" }}>{overallStats.procCount[p] || 0}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {activeTab === "chart" && (
+                    <div style={{ marginTop: 18 }}>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+                        {PROC_ORDER.map(p => (
+                          <Pill key={p} active={selectedProc === p} onClick={() => setSelectedProc(p)}>{p}</Pill>
+                        ))}
+                      </div>
+
+                      <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: "20px 20px 8px", marginBottom: 18 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: 15 }}>P50 DAP รายเดือน — {selectedProc}</div>
+                            <div style={{ fontSize: 12, color: "#8494A0" }}>
+                              {drlValue ? `DRLs ประเทศไทย = ${drlValue.toFixed(2)} Gy·cm2` : "ไม่มีค่า DRLs อ้างอิงสำหรับหัตถการนี้"}
+                            </div>
+                          </div>
+                          {refNames.length > 0 && (
+                            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "#5B6B75", cursor: "pointer" }}>
+                              <input type="checkbox" checked={showIntlRefs} onChange={(e) => setShowIntlRefs(e.target.checked)} />
+                              แสดงเส้นอ้างอิงต่างประเทศ
+                            </label>
+                          )}
+                        </div>
+
+                        {chartData.length === 0 ? (
+                          <div style={{ padding: 60, textAlign: "center", color: "#8494A0" }}>ไม่มีข้อมูลในช่วงเวลาที่เลือกสำหรับหัตถการนี้</div>
+                        ) : (
+                          <ResponsiveContainer width="100%" height={420}>
+                            <LineChart data={chartData} margin={{ top: 20, right: 24, left: 8, bottom: 8 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#EEF2F4" vertical={false} />
+                              <XAxis dataKey="month" tick={{ fontSize: 10, fill: "#5B6B75" }} interval={0} angle={-40} textAnchor="end" height={60} />
+                              <YAxis tick={{ fontSize: 11, fill: "#5B6B75" }} label={{ value: "DAP (Gy cm2)", angle: -90, position: "insideLeft", fontSize: 11, fill: "#5B6B75" }} />
+                              <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #E2E8ED", fontSize: 12.5 }} />
+                              <Legend wrapperStyle={{ fontSize: 12 }} />
+                              {showIntlRefs && refNames.map(rn => (
+                                <Line key={rn} type="monotone" dataKey={rn} stroke={REF_COLORS[rn] || "#999"} strokeDasharray="5 4" dot={false} strokeWidth={1.5} isAnimationActive={false} />
+                              ))}
+                              <Line type="monotone" dataKey="MiSIR" stroke={MISIR_BLUE} strokeWidth={2.5} dot={{ r: 3.5 }} isAnimationActive={false} />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        )}
+                      </div>
+
+                      <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: "20px 20px 8px" }}>
+                        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>เปรียบเทียบรายปี — {selectedProc}</div>
+                        <ResponsiveContainer width="100%" height={340}>
+                          <BarChart data={combinedYearly[selectedProc] || []} margin={{ top: 20, right: 24, left: 8, bottom: 8 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#EEF2F4" vertical={false} />
+                            <XAxis dataKey="year" tick={{ fontSize: 11, fill: "#5B6B75" }} />
+                            <YAxis tick={{ fontSize: 11, fill: "#5B6B75" }} label={{ value: "DAP (Gy cm2)", angle: -90, position: "insideLeft", fontSize: 11, fill: "#5B6B75" }} />
+                            <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #E2E8ED", fontSize: 12.5 }} />
+                            <Legend wrapperStyle={{ fontSize: 12 }} />
+                            <Bar dataKey="MiSIR" fill={CORAL} radius={[3, 3, 0, 0]} />
+                            {DRLS_THAILAND.hasOwnProperty(selectedProc) && <Bar dataKey="DRLs" fill={DRL_GOLD} radius={[3, 3, 0, 0]} />}
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  )}
+                </React.Fragment>
+              )}
+            </React.Fragment>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const rootEl = document.getElementById("root");
+const bootLoading = document.getElementById("boot-loading");
+if (bootLoading) bootLoading.style.display = "none";
+ReactDOM.createRoot(rootEl).render(<App />);
+
+</script>
+
+<script>
+  (function () {
+    var srcEl = document.getElementById("app-source");
+    var code = srcEl.textContent;
+    try {
+      var out = Babel.transform(code, {
+        presets: [["react", { runtime: "classic" }], "env"],
+      }).code;
+      var s = document.createElement("script");
+      s.textContent = out;
+      document.body.appendChild(s);
+    } catch (err) {
+      var loading = document.getElementById("boot-loading");
+      if (loading) {
+        loading.style.display = "flex";
+        loading.textContent = "เกิดข้อผิดพลาดขณะโหลดแอป: " + err.message;
+        loading.style.color = "#B91C1C";
+      }
+      console.error(err);
+    }
+  })();
+</script>
+</body>
+</html>
