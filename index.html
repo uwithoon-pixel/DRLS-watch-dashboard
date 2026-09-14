@@ -17,7 +17,43 @@
 <!-- Recharts (+ peer dep prop-types) -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.10.3/Recharts.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<!-- Supabase -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const SUPA_URL = "https://kcsuljmxhcskayjyitmd.supabase.co";
+const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtjc3Vsam14aGNza2F5anlpdG1kIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU2MzI2ODMsImV4cCI6MjEwMTIwODY4M30.A2Bh8HYJYxPLYt8DHMK_-JO6TFJJMC5ijhH6XwNtXak";
+const USER_ID  = "misir-neuro-ir";
+const SUPA_TABLE = "dose_data";
+const sb = supabase.createClient(SUPA_URL, SUPA_KEY);
+
+async function supaLoad() {
+  try {
+    const { data, error } = await sb
+      .from(SUPA_TABLE)
+      .select('exams_json, file_name, date_from, date_to')
+      .eq('user_id', USER_ID)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .single();
+    if (error || !data) return null;
+    return data;
+  } catch(e) { console.warn('Supabase load failed:', e); return null; }
+}
+
+async function supaSave(exams, fileName, dateFrom, dateTo) {
+  try {
+    const { error } = await sb.from(SUPA_TABLE).upsert({
+      user_id:    USER_ID,
+      exams_json: exams,
+      file_name:  fileName,
+      date_from:  dateFrom,
+      date_to:    dateTo,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'user_id' });
+    if (error) console.warn('Supabase save error:', error);
+  } catch(e) { console.warn('Supabase save failed:', e); }
+}
+</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -27,8 +63,9 @@
   html, body { margin: 0; padding: 0; background: #EEF2F4; }
   body { font-family: 'Inter', -apple-system, sans-serif; color: #1A2733; }
   button { font-family: inherit; }
-  input[type=date], input[type=month] { font-family: inherit; }
+  input[type=date] { font-family: inherit; }
   #root { min-height: 100vh; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .print-report { display: none; }
   @media print {
     .no-print, .screen-only { display: none !important; }
@@ -54,7 +91,7 @@ const {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } = Recharts;
 
-// ===================== ค่าคงที่อ้างอิง =====================
+// Reference DRL Values
 const DRLS_THAILAND = { "TACE": 226.0, "Cerebral Angiogram": 108.0, "AVM Embolization": 187.0, "Aneurysm Embolization": 209.0 };
 
 const INTL_REFS = {
@@ -74,82 +111,14 @@ const REF_COLORS = {
 
 const PROC_ORDER = ["Venoplasty", "PTA Leg", "TACE", "Cerebral Angiogram", "AVM Embolization", "Aneurysm Embolization", "Stroke"];
 
-// ชื่อหัตถการในไฟล์สรุป (Excel) -> ชื่อในแอป
-const EXCEL_TO_APP = {
-  "Venoplasty": "Venoplasty", "PTA Leg": "PTA Leg", "TACE": "TACE",
-  "Cerebral Angiogram": "Cerebral Angiogram", "AVM": "AVM Embolization",
-  "Aneurysm": "Aneurysm Embolization", "Stroke": "Stroke",
-};
-
 const MISIR_BLUE = "#2E7CB8";
 const CORAL = "#E8836F";
 const DRL_GOLD = "#F8CB7B";
 
 const THAI_MONTHS = { 1: "ม.ค.", 2: "ก.พ.", 3: "มี.ค.", 4: "เม.ย.", 5: "พ.ค.", 6: "มิ.ย.", 7: "ก.ค.", 8: "ส.ค.", 9: "ก.ย.", 10: "ต.ค.", 11: "พ.ย.", 12: "ธ.ค." };
-const THAI_MON_TO_NUM = { "ม.ค.":1,"ก.พ.":2,"มี.ค.":3,"เม.ย.":4,"พ.ค.":5,"มิ.ย.":6,"ก.ค.":7,"ส.ค.":8,"ก.ย.":9,"ต.ค.":10,"พ.ย.":11,"ธ.ค.":12 };
 
 function toBuddhistYear(ceYear) { return ceYear + 543; }
 
-// ===================== ฐานข้อมูลตั้งต้น (ฝังจากไฟล์ Excel ก.ค.2569) =====================
-// ค่า MiSIR = P50 (median) DAP รายเดือน  |  ym = ปีค.ศ.-เดือน
-const BASELINE_MONTHLY = {
-  "Venoplasty": [["2024-10",1.55], ["2024-11",0.75], ["2024-12",1.42], ["2025-01",1.28], ["2025-02",2.01], ["2025-03",0.66], ["2025-04",3.12], ["2025-05",2.15], ["2025-06",2.39], ["2025-07",2.25], ["2025-08",2.38], ["2025-09",2.86], ["2025-10",1.63], ["2025-11",2.5], ["2025-12",1.69], ["2026-01",4.16], ["2026-02",2.26], ["2026-03",1.69], ["2026-04",1.88], ["2026-05",3.89], ["2026-06",3.09], ["2026-07",3.99]],
-  "PTA Leg": [["2024-10",2.76], ["2024-11",5.73], ["2024-12",5.36], ["2025-01",24.66], ["2025-02",3.28], ["2025-03",9.04], ["2025-04",17.59], ["2025-05",22.53], ["2025-06",23.48], ["2025-07",26.74], ["2025-08",7.86], ["2025-09",11.49], ["2025-10",10.26], ["2025-11",20.61], ["2025-12",10.63], ["2026-01",6.61], ["2026-02",4.13], ["2026-03",5.63], ["2026-04",7.27], ["2026-05",24.54], ["2026-06",5.94], ["2026-07",6.1]],
-  "TACE": [["2024-10",97.86], ["2024-11",82.89], ["2024-12",70.07], ["2025-01",99.77], ["2025-02",80.9], ["2025-03",70.8], ["2025-04",95.25], ["2025-05",76.07], ["2025-06",72.68], ["2025-07",44.15], ["2025-08",83.91], ["2025-09",72.0], ["2025-10",60.22], ["2025-11",53.77], ["2025-12",67.57], ["2026-01",90.23], ["2026-02",64.27], ["2026-03",44.16], ["2026-04",66.59], ["2026-05",84.81], ["2026-06",50.19], ["2026-07",70.31]],
-  "Cerebral Angiogram": [["2024-10",30.39], ["2024-11",31.54], ["2024-12",41.94], ["2025-01",70.5], ["2025-02",70.97], ["2025-03",45.59], ["2025-04",32.52], ["2025-05",30.45], ["2025-06",25.81], ["2025-07",26.9], ["2025-08",25.93], ["2025-09",24.43], ["2025-10",26.72], ["2025-11",39.7], ["2025-12",43.05], ["2026-01",24.95], ["2026-02",29.38], ["2026-03",38.66], ["2026-04",23.51], ["2026-05",33.42], ["2026-06",28.7], ["2026-07",31.73]],
-  "AVM Embolization": [["2024-10",0.0], ["2024-11",90.55], ["2024-12",0.0], ["2025-01",0.0], ["2025-02",136.39], ["2025-03",0.0], ["2025-04",0.0], ["2025-05",198.06], ["2025-06",0.0], ["2025-07",0.0], ["2025-08",0.0], ["2025-09",233.56], ["2025-10",62.8], ["2025-11",289.88], ["2025-12",162.76], ["2026-01",0.0], ["2026-02",235.68], ["2026-03",191.7], ["2026-04",135.84], ["2026-05",216.28], ["2026-06",0.0], ["2026-07",123.86]],
-  "Aneurysm Embolization": [["2024-10",90.06], ["2024-11",194.65], ["2024-12",126.88], ["2025-01",124.19], ["2025-02",357.54], ["2025-03",285.59], ["2025-04",168.17], ["2025-05",143.23], ["2025-06",122.81], ["2025-07",247.41], ["2025-08",198.57], ["2025-09",135.67], ["2025-10",160.45], ["2025-11",134.02], ["2025-12",129.11], ["2026-01",193.26], ["2026-02",108.21], ["2026-03",264.24], ["2026-04",171.12], ["2026-05",155.55], ["2026-06",146.83], ["2026-07",214.28]],
-  "Stroke": [["2024-10",107.53], ["2024-11",0.0], ["2024-12",59.93], ["2025-01",141.37], ["2025-02",175.83], ["2025-03",233.54], ["2025-04",147.74], ["2025-05",100.29], ["2025-06",157.84], ["2025-07",112.62], ["2025-08",51.74], ["2025-09",83.05], ["2025-10",94.98], ["2025-11",63.73], ["2025-12",200.59], ["2026-01",163.34], ["2026-02",80.14], ["2026-03",220.75], ["2026-04",88.98], ["2026-05",68.16], ["2026-06",79.46], ["2026-07",147.48]]
-};
-
-const BASELINE_YEARLY = {
-  "Venoplasty": [[2563,4.04], [2564,1.9], [2565,2.27], [2566,1.68], [2567,1.68], [2568,2.2], [2569,2.28]],
-  "PTA Leg": [[2563,17.94], [2564,10.25], [2565,15.44], [2566,8.62], [2567,7.3], [2568,14.54], [2569,5.76]],
-  "TACE": [[2563,109.11], [2564,63.0], [2565,66.31], [2566,76.66], [2567,73.24], [2568,72.34], [2569,63.07]],
-  "Cerebral Angiogram": [[2563,64.49], [2564,28.95], [2565,29.52], [2566,27.57], [2567,32.85], [2568,31.48], [2569,47.38]],
-  "AVM Embolization": [[2563,140.65], [2564,129.08], [2565,56.62], [2566,52.04], [2567,45.28], [2568,31.4], [2569,58.84]],
-  "Aneurysm Embolization": [[2563,159.83], [2564,112.8], [2565,120.36], [2566,130.05], [2567,140.05], [2568,151.84], [2569,38.85]],
-  "Stroke": [[2563,null], [2564,117.4], [2565,91.34], [2566,100.42], [2567,99.37], [2568,127.0], [2569,80.42]]
-};
-
-const BASELINE_KAR3GY = [[2560,1], [2561,0], [2562,1], [2563,3], [2564,5], [2565,2], [2566,0], [2567,0], [2568,3], [2569,0]];
-
-// ===================== ข้อมูลฐานสำหรับรายงาน PDF =====================
-// เหตุการณ์ผู้ป่วย Ka,r >= 3 Gy (จากรายงานประจำปี พ.ศ.2568)
-const BASELINE_KAR_EVENTS = [
-  { date:"18/12/62", be:2562, hn:"2211997", name:"MISS CHALI KRACHANGCHOY",  proc:"Vascular Intervention", kar:3.59, dap:558.41  },
-  { date:"27/01/63", be:2563, hn:"2132988", name:"CHUSRI SORNIN",            proc:"Vascular Intervention", kar:3.94, dap:803.10  },
-  { date:"29/01/63", be:2563, hn:"2015656", name:"LERTPIPAT CHOTOKA",        proc:"Vascular Intervention", kar:3.34, dap:484.71  },
-  { date:"28/10/63", be:2563, hn:"1003417", name:"JINTANA PRATEP",           proc:"Aneurysm Em.",          kar:4.20, dap:725.41  },
-  { date:"10/02/64", be:2564, hn:"2260196", name:"MISS DARUNEE THANOM",      proc:"Aneurysm Em.",          kar:3.19, dap:389.49  },
-  { date:"19/05/64", be:2564, hn:"2262212", name:"MRS. KHWANJAI SAENGTHAI",  proc:"Aneurysm Em.",          kar:6.93, dap:930.85  },
-  { date:"23/06/64", be:2564, hn:"2272920", name:"MR. PARIWAT MEELAM",       proc:"CCF Em.",               kar:3.44, dap:716.48  },
-  { date:"28/06/64", be:2564, hn:"2272920", name:"MR. PARIWAT MEELAM",       proc:"CCF Em.",               kar:3.32, dap:693.22, note:"*** (ในผู้ป่วยรายเดียวกัน)" },
-  { date:"30/11/64", be:2564, hn:"835023",  name:"NON",                      proc:"Unknown Study",         kar:4.35, dap:434.01  },
-  { date:"30/05/65", be:2565, hn:"2360012", name:"SANGOP R.",                proc:"CCF Em.",               kar:3.55, dap:560.09  },
-  { date:"16/11/65", be:2565, hn:"2296946", name:"MRS. WIAN PONGKAN",        proc:"Aneurysm Em.",          kar:5.17, dap:944.34  },
-  { date:"02/01/68", be:2568, hn:"2477257", name:"KEREEPECH PASINEE",        proc:"Unknown Study",         kar:4.64, dap:1416.18 },
-  { date:"26/02/68", be:2568, hn:"1738775", name:"SUJIN K.",                 proc:"Aneurysm FDS",          kar:4.93, dap:463.26  },
-  { date:"29/12/68", be:2568, hn:"210639",  name:"MRS. CHUCHIP DAMNOO",      proc:"Aneurysm Coil",         kar:3.60, dap:509.85  },
-];
-
-// เดือนที่ค่า P50 DAP เกิน DRLs ไทย ก่อนช่วงที่มีข้อมูลรายเดือนในแอป (ก่อน ต.ค.2567)
-const BASELINE_DRL_EXCEED_HIST = {
-  "AVM Embolization": [
-    { label: "ม.ค. 2564", dap: 192.30 }, { label: "ก.ย. 2564", dap: 233.10 },
-    { label: "ธ.ค. 2564", dap: 206.00 }, { label: "ต.ค. 2566", dap: 693.23 },
-    { label: "ม.ค. 2567", dap: 252.23 }, { label: "ก.พ. 2567", dap: 249.58 },
-  ],
-  "Aneurysm Embolization": [
-    { label: "เม.ย. 2564", dap: 257.50 }, { label: "พ.ย. 2565", dap: 246.22 },
-    { label: "ก.ย. 2567", dap: 211.76 },
-  ],
-};
-
-
-const BASELINE_MONTH_COUNT = BASELINE_MONTHLY["Venoplasty"].length;
-
-// ===================== ตัวช่วยจัดหมวด/คำนวณ =====================
 const CEREBRAL_ANGIOGRAM_EXACT = new Set([
   "aneurysm", "avm", "direct ccf", "dural avf", "dural ccf", "tumor",
   "carotid angiogram for stenosis", "stenosis/ occlusion, cerebral",
@@ -194,9 +163,6 @@ function median(arr) {
   return s.length % 2 !== 0 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-function round2(v) { return v === null || v === undefined ? null : Number(Number(v).toFixed(2)); }
-
-// อ่าน raw Dose Report -> รายการ exam
 function processRawData(rows) {
   const findKey = (obj, candidates) => {
     const keys = Object.keys(obj);
@@ -256,38 +222,12 @@ function processRawData(rows) {
   const deduped = Array.from(byKey.values());
   const withDap = deduped.filter(r => r.dap !== null);
 
-  // เก็บเฉพาะฟิลด์ที่จำเป็น (ให้บันทึกลง localStorage ได้เล็ก)
-  const slim = withDap.map(r => ({
-    examId: r.examId, dateStr: r.dateStr, procedureRaw: String(r.procedureRaw ?? ""),
-    category: r.category, dap: r.dap, kar_mGy: r.kar_mGy, kar_Gy: r.kar_Gy,
-    mrn: r.mrn, patientName: r.patientName, description: r.description,
-  }));
-
-  return { exams: slim, warnings, totalRaw: rows.length, totalDeduped: slim.length };
-}
-
-// รวม exam จากหลายครั้ง แล้วตัดซ้ำด้วย examId + วันที่
-function dedupeExams(exams) {
-  const byKey = new Map();
-  for (const r of exams) {
-    const key = `${r.examId}__${r.dateStr}`;
-    if (!byKey.has(key)) byKey.set(key, r);
-  }
-  return Array.from(byKey.values());
-}
-
-function labelToYm(lbl) {
-  if (lbl == null) return null;
-  const s = String(lbl).trim();
-  const idx = s.lastIndexOf("-");
-  if (idx < 0) return null;
-  const mon = s.slice(0, idx).trim();
-  const by2 = s.slice(idx + 1).trim();
-  const m = THAI_MON_TO_NUM[mon];
-  const n = parseInt(by2, 10);
-  if (!m || isNaN(n)) return null;
-  const ce = (2500 + n) - 543;
-  return `${ce}-${String(m).padStart(2, "0")}`;
+  return {
+    exams: withDap,
+    warnings,
+    totalRaw: rows.length,
+    totalDeduped: withDap.length,
+  };
 }
 
 function monthLabel(ym) {
@@ -296,613 +236,163 @@ function monthLabel(ym) {
   return `${THAI_MONTHS[m]}-${by}`;
 }
 
-function monthLabelFull(ym) {
-  const [y, mo] = ym.split("-").map(Number);
-  return `${THAI_MONTHS[mo]} ${toBuddhistYear(y)}`;
-}
-
-function ymToBE(ym) { return toBuddhistYear(Number(ym.slice(0, 4))); }
-
-// อ่าน "ไฟล์สรุปสำเร็จรูป" (มีชีต Monthly_* / Yearly_* / Patient_Ka,r_3Gy)
-function parseAggregatedWorkbook(wb) {
-  const out = { monthly: {}, yearly: {}, kar: {}, monthsFound: 0 };
-
-  const readSheetRows = (sheet) => {
-    // จัด !ref ให้พอดีข้อมูลจริง กัน sheet_to_json ค้าง
-    let maxR = 0, maxC = 0, minR = Infinity, minC = Infinity, cellCount = 0;
-    for (const addr in sheet) {
-      if (addr[0] === "!") continue;
-      cellCount++;
-      const dec = XLSX.utils.decode_cell(addr);
-      if (dec.r > maxR) maxR = dec.r;
-      if (dec.c > maxC) maxC = dec.c;
-      if (dec.r < minR) minR = dec.r;
-      if (dec.c < minC) minC = dec.c;
-    }
-    if (cellCount > 0) sheet["!ref"] = XLSX.utils.encode_range({ s: { r: minR, c: minC }, e: { r: maxR, c: maxC } });
-    return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
-  };
-
-  for (const name of wb.SheetNames) {
-    const sheet = wb.Sheets[name];
-    if (name.indexOf("Monthly_") === 0) {
-      const app = EXCEL_TO_APP[name.slice(8)];
-      if (!app) continue;
-      const rows = readSheetRows(sheet);
-      const hi = rows.findIndex(r => r && String(r[0]).trim() === "เดือน/ปี");
-      if (hi < 0) continue;
-      out.monthly[app] = out.monthly[app] || {};
-      for (let i = hi + 1; i < rows.length; i++) {
-        const r = rows[i]; if (!r || r[0] == null) continue;
-        const ym = labelToYm(r[0]); if (!ym) continue;
-        const v = parseFloat(r[1]);
-        if (!isNaN(v)) { out.monthly[app][ym] = round2(v); out.monthsFound++; }
-      }
-    } else if (name.indexOf("Yearly_") === 0) {
-      const app = EXCEL_TO_APP[name.slice(7)];
-      if (!app) continue;
-      const rows = readSheetRows(sheet);
-      const hi = rows.findIndex(r => r && String(r[0]).trim() === "ปี พ.ศ.");
-      if (hi < 0) continue;
-      out.yearly[app] = out.yearly[app] || {};
-      for (let i = hi + 1; i < rows.length; i++) {
-        const r = rows[i]; if (!r || r[0] == null) continue;
-        const be = parseInt(String(r[0]).replace("พ.ศ.", "").trim(), 10);
-        const v = parseFloat(r[1]);
-        if (!isNaN(be) && !isNaN(v)) out.yearly[app][be] = round2(v);
-      }
-    } else if (name === "Patient_Ka,r_3Gy") {
-      const rows = readSheetRows(sheet);
-      const hi = rows.findIndex(r => r && String(r[0]).trim() === "ปี พ.ศ.");
-      if (hi < 0) continue;
-      for (let i = hi + 1; i < rows.length; i++) {
-        const r = rows[i]; if (!r || r[0] == null) continue;
-        const be = parseInt(String(r[0]).replace("พ.ศ.", "").trim(), 10);
-        const v = parseInt(r[1], 10);
-        if (!isNaN(be) && !isNaN(v)) out.kar[be] = v;
-      }
-    }
-  }
-  return out;
-}
-
-// ===================== ตัวช่วย localStorage =====================
-const DB_KEY = "doseWatchDB_v1";
-function emptyDB() {
-  return { version: 1, addedExams: [], importedMonthly: {}, importedYearly: {}, importedKar: {}, history: [] };
-}
-function loadDB() {
-  try {
-    const raw = localStorage.getItem(DB_KEY);
-    if (!raw) return emptyDB();
-    const obj = JSON.parse(raw);
-    return { ...emptyDB(), ...obj };
-  } catch (e) { return emptyDB(); }
-}
-function saveDBtoStorage(db) {
-  try { localStorage.setItem(DB_KEY, JSON.stringify(db)); return true; }
-  catch (e) { return false; }
-}
-
-// ===================== รวมฐานตั้งต้น + ข้อมูลที่เพิ่ม =====================
-function buildMergedMonthly(db) {
-  const out = {};
-  for (const proc of PROC_ORDER) {
-    const map = new Map();
-    (BASELINE_MONTHLY[proc] || []).forEach(([ym, v]) => map.set(ym, { MiSIR: v, src: "baseline" }));
-    const imp = db.importedMonthly[proc] || {};
-    Object.keys(imp).forEach(ym => map.set(ym, { MiSIR: imp[ym], src: "import" }));
-    // จาก raw exam
-    const grouped = {};
-    for (const e of db.addedExams) {
-      if (e.category !== proc || !e.dateStr) continue;
-      const ym = e.dateStr.slice(0, 7);
-      (grouped[ym] = grouped[ym] || []).push(e.dap);
-    }
-    Object.keys(grouped).forEach(ym => {
-      map.set(ym, { MiSIR: round2(median(grouped[ym])), n: grouped[ym].length, src: "raw" });
-    });
-
-    const refs = INTL_REFS[proc] || {};
-    const rows = [...map.keys()].sort().map(ym => {
-      const row = { ym, month: monthLabel(ym), MiSIR: map.get(ym).MiSIR, n: map.get(ym).n, _src: map.get(ym).src };
-      for (const [rn, rv] of Object.entries(refs)) row[rn] = rv;
-      return row;
-    });
-    out[proc] = rows;
-  }
-  return out;
-}
-
-function buildMergedYearly(db) {
-  const out = {};
-  for (const proc of PROC_ORDER) {
-    const hasDRL = DRLS_THAILAND.hasOwnProperty(proc);
-    const map = new Map();
-    (BASELINE_YEARLY[proc] || []).forEach(([be, v]) => map.set(be, v));
-    const imp = db.importedYearly[proc] || {};
-    Object.keys(imp).forEach(be => map.set(Number(be), imp[be]));
-    const grouped = {};
-    for (const e of db.addedExams) {
-      if (e.category !== proc || !e.dateStr) continue;
-      const be = ymToBE(e.dateStr.slice(0, 7));
-      (grouped[be] = grouped[be] || []).push(e.dap);
-    }
-    Object.keys(grouped).forEach(be => map.set(Number(be), round2(median(grouped[be]))));
-
-    const rows = [...map.keys()].sort((a, b) => a - b).map(be => ({
-      year: `พ.ศ.${be}`, be, MiSIR: map.get(be), DRLs: hasDRL ? DRLS_THAILAND[proc] : null,
-    }));
-    out[proc] = rows;
-  }
-  return out;
-}
-
-function buildMergedKar(db) {
-  const map = new Map();
-  BASELINE_KAR3GY.forEach(([be, c]) => map.set(be, c));
-  Object.keys(db.importedKar || {}).forEach(be => map.set(Number(be), db.importedKar[be]));
-  const grouped = {};
-  for (const e of db.addedExams) {
-    if (!e.dateStr || e.kar_Gy == null) continue;
-    if (e.kar_Gy >= 3) {
-      const be = ymToBE(e.dateStr.slice(0, 7));
-      grouped[be] = (grouped[be] || 0) + 1;
-    }
-  }
-  // เฉพาะปีที่มี raw exam จริง จึงจะ override baseline (ป้องกันปีที่ยังไม่มี raw ถูกเขียนเป็น 0)
-  const rawYears = {};
-  for (const e of db.addedExams) { if (e.dateStr) rawYears[ymToBE(e.dateStr.slice(0,7))] = true; }
-  Object.keys(rawYears).forEach(be => map.set(Number(be), grouped[be] || 0));
-
-  return [...map.keys()].sort((a, b) => a - b).map(be => ({ year: `พ.ศ.${be}`, be, count: map.get(be) }));
-}
-
-// ===================== รูปกราฟสำหรับฝังใน Excel =====================
+// Function to render chart to PNG DataURL for embedding into Excel
 async function createChartImageBase64(title, data, refKeys) {
   const canvas = document.createElement("canvas");
-  canvas.width = 900; canvas.height = 450;
+  canvas.width = 900;
+  canvas.height = 450;
   const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#FFFFFF"; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.font = "bold 22px 'Inter', sans-serif"; ctx.fillStyle = "#0F3B4D"; ctx.textAlign = "center";
+
+  // Background
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Title
+  ctx.font = "bold 22px 'Inter', sans-serif";
+  ctx.fillStyle = "#0F3B4D";
+  ctx.textAlign = "center";
   ctx.fillText(`P50 DAP - ${title}`, canvas.width / 2, 40);
+
   if (!data || data.length === 0) return canvas.toDataURL("image/png");
 
-  const paddingLeft = 70, paddingRight = 160, paddingTop = 70, paddingBottom = 80;
+  const paddingLeft = 70;
+  const paddingRight = 160;
+  const paddingTop = 70;
+  const paddingBottom = 80;
   const plotWidth = canvas.width - paddingLeft - paddingRight;
   const plotHeight = canvas.height - paddingTop - paddingBottom;
 
+  // Find max Y
   let maxY = 10;
-  data.forEach(d => { if (d.MiSIR && d.MiSIR > maxY) maxY = d.MiSIR; refKeys.forEach(k => { if (d[k] && d[k] > maxY) maxY = d[k]; }); });
+  data.forEach(d => {
+    if (d.MiSIR && d.MiSIR > maxY) maxY = d.MiSIR;
+    refKeys.forEach(k => { if (d[k] && d[k] > maxY) maxY = d[k]; });
+  });
   maxY = Math.ceil(maxY * 1.15);
 
-  ctx.strokeStyle = "#EEF2F4"; ctx.lineWidth = 1; ctx.font = "12px sans-serif"; ctx.fillStyle = "#5B6B75"; ctx.textAlign = "right";
+  // Grid lines & Y Axis Labels
+  ctx.strokeStyle = "#EEF2F4";
+  ctx.lineWidth = 1;
+  ctx.font = "12px sans-serif";
+  ctx.fillStyle = "#5B6B75";
+  ctx.textAlign = "right";
+
   const steps = 5;
   for (let i = 0; i <= steps; i++) {
     const yVal = (maxY / steps) * i;
     const yPos = paddingTop + plotHeight - (i / steps) * plotHeight;
-    ctx.beginPath(); ctx.moveTo(paddingLeft, yPos); ctx.lineTo(paddingLeft + plotWidth, yPos); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(paddingLeft, yPos);
+    ctx.lineTo(paddingLeft + plotWidth, yPos);
+    ctx.stroke();
     ctx.fillText(yVal.toFixed(2), paddingLeft - 10, yPos + 4);
   }
-  ctx.save(); ctx.translate(20, canvas.height / 2); ctx.rotate(-Math.PI / 2);
-  ctx.font = "bold 13px sans-serif"; ctx.fillText("DAP (Gy cm2)", 0, 0); ctx.restore();
 
+  // Y Axis Label
+  ctx.save();
+  ctx.translate(20, canvas.height / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.font = "bold 13px sans-serif";
+  ctx.fillText("DAP (Gy cm2)", 0, 0);
+  ctx.restore();
+
+  // X Axis & Line Plots
   const stepX = data.length > 1 ? plotWidth / (data.length - 1) : plotWidth / 2;
+
+  // Plot Reference Lines
   refKeys.forEach(rk => {
-    ctx.strokeStyle = REF_COLORS[rk] || "#888888"; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); ctx.beginPath();
+    ctx.strokeStyle = REF_COLORS[rk] || "#888888";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
     data.forEach((d, idx) => {
       const x = paddingLeft + (data.length === 1 ? plotWidth / 2 : idx * stepX);
       const val = d[rk] !== undefined ? d[rk] : INTL_REFS[title]?.[rk];
-      if (val !== undefined) { const y = paddingTop + plotHeight - (val / maxY) * plotHeight; if (idx === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
+      if (val !== undefined) {
+        const y = paddingTop + plotHeight - (val / maxY) * plotHeight;
+        if (idx === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
     });
-    ctx.stroke(); ctx.setLineDash([]);
+    ctx.stroke();
+    ctx.setLineDash([]);
   });
 
-  ctx.strokeStyle = MISIR_BLUE; ctx.lineWidth = 2.5; ctx.beginPath();
+  // Plot MiSIR Line
+  ctx.strokeStyle = MISIR_BLUE;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
   data.forEach((d, idx) => {
     const x = paddingLeft + (data.length === 1 ? plotWidth / 2 : idx * stepX);
-    if (d.MiSIR !== null && d.MiSIR !== undefined) { const y = paddingTop + plotHeight - (d.MiSIR / maxY) * plotHeight; if (idx === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
+    if (d.MiSIR !== null) {
+      const y = paddingTop + plotHeight - (d.MiSIR / maxY) * plotHeight;
+      if (idx === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
   });
   ctx.stroke();
 
+  // Plot Points & X Labels
   data.forEach((d, idx) => {
     const x = paddingLeft + (data.length === 1 ? plotWidth / 2 : idx * stepX);
-    ctx.save(); ctx.translate(x, paddingTop + plotHeight + 15); ctx.rotate(-Math.PI / 4);
-    ctx.font = "11px sans-serif"; ctx.fillStyle = "#1A2733"; ctx.textAlign = "right"; ctx.fillText(d.month, 0, 0); ctx.restore();
-    if (d.MiSIR !== null && d.MiSIR !== undefined) {
+
+    // X Axis Label
+    ctx.save();
+    ctx.translate(x, paddingTop + plotHeight + 15);
+    ctx.rotate(-Math.PI / 4);
+    ctx.font = "11px sans-serif";
+    ctx.fillStyle = "#1A2733";
+    ctx.textAlign = "right";
+    ctx.fillText(d.month, 0, 0);
+    ctx.restore();
+
+    // MiSIR Point
+    if (d.MiSIR !== null) {
       const y = paddingTop + plotHeight - (d.MiSIR / maxY) * plotHeight;
-      ctx.fillStyle = MISIR_BLUE; ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = MISIR_BLUE;
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fill();
     }
   });
 
-  const legendX = canvas.width - paddingRight + 20; let legendY = paddingTop + 10;
-  ctx.font = "12px sans-serif"; ctx.textAlign = "left";
-  ctx.strokeStyle = MISIR_BLUE; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(legendX, legendY); ctx.lineTo(legendX + 20, legendY); ctx.stroke();
-  ctx.fillStyle = MISIR_BLUE; ctx.beginPath(); ctx.arc(legendX + 10, legendY, 3.5, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = "#1A2733"; ctx.fillText("MiSIR", legendX + 28, legendY + 4); legendY += 24;
+  // Legend
+  const legendX = canvas.width - paddingRight + 20;
+  let legendY = paddingTop + 10;
+  ctx.font = "12px sans-serif";
+  ctx.textAlign = "left";
+
+  // MiSIR Legend Item
+  ctx.strokeStyle = MISIR_BLUE;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(legendX, legendY);
+  ctx.lineTo(legendX + 20, legendY);
+  ctx.stroke();
+  ctx.fillStyle = MISIR_BLUE;
+  ctx.beginPath();
+  ctx.arc(legendX + 10, legendY, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#1A2733";
+  ctx.fillText("MiSIR", legendX + 28, legendY + 4);
+  legendY += 24;
+
+  // Ref Legend Items
   refKeys.forEach(rk => {
-    ctx.strokeStyle = REF_COLORS[rk] || "#888888"; ctx.lineWidth = 1.5; ctx.setLineDash([5, 3]); ctx.beginPath();
-    ctx.moveTo(legendX, legendY); ctx.lineTo(legendX + 20, legendY); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = "#1A2733"; ctx.fillText(rk, legendX + 28, legendY + 4); legendY += 22;
+    ctx.strokeStyle = REF_COLORS[rk] || "#888888";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 3]);
+    ctx.beginPath();
+    ctx.moveTo(legendX, legendY);
+    ctx.lineTo(legendX + 20, legendY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#1A2733";
+    ctx.fillText(rk, legendX + 28, legendY + 4);
+    legendY += 22;
   });
+
   return canvas.toDataURL("image/png");
 }
 
-
-// ═══════════════════════════════════════════════════════════
-//  รายงาน PDF — ธีม/เทมเพลตเดียวกับรายงานประจำปี (16:9, 960x540 pt)
-// ═══════════════════════════════════════════════════════════
-// ═══════════════════════════════════════════════════════════
-//  PDF Engine — match print-layout of Dose Watch Dashboard
-//  สไตล์: ขาว/navy แบบ browser-print, เพิ่มหน้า Ka,r
-// ═══════════════════════════════════════════════════════════
-
-// ── Canvas helpers ─────────────────────────────────────────
-const DW = {
-  W: 1122, H: 794, // A4 landscape px @ 96dpi equiv
-  // Colors from sampled PDF
-  navy:    "#0F3B4D",
-  dark:    "#1A2733",
-  mid:     "#434B50",
-  muted:   "#666666",
-  muted2:  "#999999",
-  blue:    "#2E7CB8",
-  blueSoft:"#A6C7E0",
-  coral:   "#E8836F",
-  coralSoft:"#F5C4B8",
-  amber:   "#D4956A",
-  amberSoft:"#F6E0CC",
-  bg:      "#FFFFFF",
-  bgLight: "#F3F6F7",
-  gridLine:"#E4E4E4",
-  divLine: "#CCCCCC",
-  tHead:   "#F06878",  // Ka,r table head pink
-  tRowA:   "#F9D4D7",
-  tRowB:   "#FCF0F1",
-  cardL:   "#FADCD9",
-  cardM:   "#F2A899",
-  cardD:   "#E8836F",
-};
-const DWFONT = '"Tahoma","Inter","Sarabun","Leelawadee UI","TH Sarabun New",sans-serif';
-const dwF = (sz, bold) => `${bold?"bold ":""}${sz}px ${DWFONT}`;
-
-function dwPage(pages) {
-  const c = document.createElement("canvas");
-  c.width = DW.W * 2; c.height = DW.H * 2;
-  const x = c.getContext("2d");
-  x.scale(2, 2);
-  x.fillStyle = DW.bg; x.fillRect(0, 0, DW.W, DW.H);
-  x.textBaseline = "alphabetic";
-  pages.push(c); return x;
-}
-
-function dwRR(x, X, Y, W, H, r) {
-  r = Math.min(r||0, W/2, H/2);
-  x.beginPath();
-  x.moveTo(X+r,Y); x.lineTo(X+W-r,Y); x.quadraticCurveTo(X+W,Y,X+W,Y+r);
-  x.lineTo(X+W,Y+H-r); x.quadraticCurveTo(X+W,Y+H,X+W-r,Y+H);
-  x.lineTo(X+r,Y+H); x.quadraticCurveTo(X,Y+H,X,Y+H-r);
-  x.lineTo(X,Y+r); x.quadraticCurveTo(X,Y,X+r,Y); x.closePath();
-}
-
-function dwNiceMax(v) {
-  if (!v || v<=0) return 10;
-  const e = Math.pow(10, Math.floor(Math.log10(v)));
-  const n = v/e;
-  const s = [1,1.25,1.5,2,2.5,3,4,5,6,8,10].find(c=>n<=c+1e-9)||10;
-  return s*e;
-}
-
-// ── Page header (timestamp + title bar) ───────────────────
-function dwHeader(x, pageTxt, totalPages, pageIdx) {
-  const now = new Date();
-  const be = now.getFullYear()+543;
-  const ts = `${now.getDate()}/${now.getMonth()+1}/${be} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-  x.fillStyle = DW.muted2; x.textAlign = "left";
-  x.font = dwF(10.5, false); x.fillText(ts, 22, 22);
-  x.textAlign = "center";
-  x.fillStyle = DW.muted2; x.font = dwF(10.5, false);
-  x.fillText("Dose Watch Dashboard — ปริมาณรังสีในหัตถการรังสีร่วมรักษา", DW.W/2, 22);
-  x.textAlign = "right";
-  x.fillText(`${pageIdx}/${totalPages}`, DW.W-22, 22);
-}
-
-// ── Section title + divider line ──────────────────────────
-function dwSectionTitle(x, title, Y) {
-  x.fillStyle = DW.navy; x.textAlign = "left";
-  x.font = dwF(17, true); x.fillText(title, 40, Y);
-  x.strokeStyle = DW.divLine; x.lineWidth = 1;
-  x.beginPath(); x.moveTo(40, Y+10); x.lineTo(DW.W-40, Y+10); x.stroke();
-  return Y + 32;
-}
-
-// ── Cover page ────────────────────────────────────────────
-function dwCoverPage(pages, fromYm, toYm, totalPages) {
-  const x = dwPage(pages); dwHeader(x, "", totalPages, 1);
-  x.fillStyle = DW.navy; x.textAlign = "center";
-  x.font = dwF(32, true);
-  x.fillText("ปริมาณรังสีที่ผู้ป่วยได้รับจากการทำหัตถการรังสีร่วมรักษา", DW.W/2, DW.H*0.55);
-  x.fillStyle = DW.blue; x.font = dwF(16, false);
-  x.fillText("ข้อมูลเฉพาะช่วงเวลาที่เลือก", DW.W/2, DW.H*0.55+46);
-  x.fillStyle = DW.muted; x.font = dwF(13, false);
-  x.fillText(`ช่วง: ${fromYm} ถึง ${toYm} · สร้างจาก Dose Watch Dashboard`, DW.W/2, DW.H*0.55+84);
-}
-
-// ── Chart line (monthly) ──────────────────────────────────
-function dwLineChart(x, B, rows, refLines, drl) {
-  const PL=B.x+64, PR=B.x+B.w-20, PT=B.y+32, PB=B.y+B.h-48;
-  const pw=PR-PL, ph=PB-PT;
-  let mx=0;
-  rows.forEach(r=>{if(r.MiSIR!=null&&r.MiSIR>mx)mx=r.MiSIR;});
-  if(drl&&drl>mx) mx=drl;
-  refLines&&refLines.forEach(r=>{if(r.v>mx)mx=r.v;});
-  const maxY=dwNiceMax(mx*1.06)||10, steps=5;
-  const py=v=>PB-(v/maxY)*ph, pxi=i=>rows.length>1?PL+i*(pw/(rows.length-1)):PL+pw/2;
-
-  // grid + y-labels
-  x.font = dwF(9.5, false); x.textAlign="right"; x.fillStyle=DW.muted;
-  for(let i=0;i<=steps;i++){
-    const yv=maxY/steps*i, yp=PB-ph*(i/steps);
-    x.strokeStyle=DW.gridLine; x.lineWidth=1;
-    x.beginPath(); x.moveTo(PL,yp); x.lineTo(PR,yp); x.stroke();
-    x.fillStyle=DW.muted; x.fillText(maxY>=50?Math.round(yv):yv.toFixed(1), PL-6, yp+3);
-  }
-  x.save(); x.translate(B.x+12,(PT+PB)/2); x.rotate(-Math.PI/2);
-  x.textAlign="center"; x.fillStyle=DW.muted; x.font=dwF(9.5,false);
-  x.fillText("DAP (Gy cm²)",0,0); x.restore();
-
-  if(!rows.length){return;}
-
-  // DRL reference line
-  if(drl){
-    x.strokeStyle="#E84C4C"; x.lineWidth=1.4; x.setLineDash([5,4]);
-    x.beginPath(); x.moveTo(PL,py(drl)); x.lineTo(PR,py(drl)); x.stroke(); x.setLineDash([]);
-  }
-  // int'l ref lines
-  refLines&&refLines.forEach(r=>{
-    x.strokeStyle=r.color; x.lineWidth=1; x.setLineDash([4,3]);
-    x.beginPath(); x.moveTo(PL,py(r.v)); x.lineTo(PR,py(r.v)); x.stroke(); x.setLineDash([]);
-  });
-
-  // MiSIR line
-  x.strokeStyle=DW.blue; x.lineWidth=2; x.beginPath();
-  let started=false;
-  rows.forEach((r,i)=>{
-    if(r.MiSIR==null)return;
-    const X=pxi(i),Y=py(r.MiSIR);
-    if(!started){x.moveTo(X,Y);started=true;}else x.lineTo(X,Y);
-  });
-  x.stroke();
-  rows.forEach((r,i)=>{
-    if(r.MiSIR==null)return;
-    const X=pxi(i),Y=py(r.MiSIR);
-    x.fillStyle=DW.bg; x.beginPath(); x.arc(X,Y,3.5,0,Math.PI*2); x.fill();
-    x.strokeStyle=DW.blue; x.lineWidth=2; x.beginPath(); x.arc(X,Y,3.5,0,Math.PI*2); x.stroke();
-  });
-  // x-axis labels (skip to avoid clutter)
-  const skip=rows.length>20?Math.ceil(rows.length/20):1;
-  x.fillStyle=DW.muted; x.textAlign="center"; x.font=dwF(8.5,false);
-  rows.forEach((r,i)=>{
-    if(i%skip!==0)return;
-    const X=pxi(i);
-    x.save(); x.translate(X,PB+12); x.rotate(-Math.PI/4);
-    x.fillText(r.month,0,0); x.restore();
-  });
-  x.strokeStyle=DW.divLine; x.lineWidth=1;
-  x.beginPath(); x.moveTo(PL,PB); x.lineTo(PR,PB); x.stroke();
-  // legend
-  const leItems=[{n:"MiSIR",c:DW.blue,dsh:false}];
-  if(drl) leItems.push({n:"Thailand",c:"#E84C4C",dsh:true});
-  refLines&&refLines.forEach(r=>leItems.push({n:r.name,c:r.color,dsh:true}));
-  let lx=PL; const lY=PT-16;
-  x.font=dwF(9.5,false);
-  leItems.forEach(l=>{
-    if(l.dsh){x.strokeStyle=l.c;x.lineWidth=1.4;x.setLineDash([4,3]);x.beginPath();x.moveTo(lx,lY);x.lineTo(lx+18,lY);x.stroke();x.setLineDash([]);}
-    else{x.strokeStyle=l.c;x.lineWidth=2;x.beginPath();x.moveTo(lx,lY);x.lineTo(lx+18,lY);x.stroke();x.fillStyle=DW.bg;x.beginPath();x.arc(lx+9,lY,3,0,Math.PI*2);x.fill();x.strokeStyle=l.c;x.lineWidth=1.5;x.beginPath();x.arc(lx+9,lY,3,0,Math.PI*2);x.stroke();}
-    x.fillStyle=DW.muted;x.textAlign="left";x.fillText(l.n,lx+22,lY+3.5);
-    lx+=22+x.measureText(l.n).width+14;
-  });
-}
-
-// ── Bar chart (yearly) ─────────────────────────────────────
-function dwBarChart(x, B, rows, drl) {
-  const PL=B.x+64, PR=B.x+B.w-90, PT=B.y+20, PB=B.y+B.h-44;
-  const pw=PR-PL, ph=PB-PT;
-  const hasDrl=drl!=null;
-  let mx=0; rows.forEach(r=>{if(r.MiSIR!=null&&r.MiSIR>mx)mx=r.MiSIR;});
-  if(hasDrl&&drl>mx)mx=drl;
-  const maxY=dwNiceMax(mx*1.06)||10, steps=5;
-  const py=v=>PB-(v/maxY)*ph;
-
-  x.font=dwF(9.5,false); x.textAlign="right"; x.fillStyle=DW.muted;
-  for(let i=0;i<=steps;i++){
-    const yv=maxY/steps*i, yp=PB-ph*(i/steps);
-    x.strokeStyle=DW.gridLine; x.lineWidth=1;
-    x.beginPath(); x.moveTo(PL,yp); x.lineTo(PR,yp); x.stroke();
-    x.fillText(maxY>=50?Math.round(yv):yv.toFixed(1), PL-6, yp+3);
-  }
-  x.save(); x.translate(B.x+12,(PT+PB)/2); x.rotate(-Math.PI/2);
-  x.textAlign="center"; x.fillStyle=DW.muted; x.font=dwF(9.5,false);
-  x.fillText("DAP (Gy cm²)",0,0); x.restore();
-
-  if(!rows.length)return;
-  const n=rows.length, slot=pw/n;
-  const bw=hasDrl?Math.min(28,slot*0.3):Math.min(36,slot*0.45);
-
-  rows.forEach((r,i)=>{
-    const cx=PL+slot*i+slot/2;
-    const xM=hasDrl?cx-bw-2:cx-bw/2;
-    if(r.MiSIR!=null){
-      const h=PB-py(r.MiSIR);
-      x.fillStyle=DW.coral; x.fillRect(xM,py(r.MiSIR),bw,h);
-    }
-    if(hasDrl){
-      const h=PB-py(drl);
-      x.fillStyle=DW.amberSoft; x.strokeStyle=DW.amber; x.lineWidth=0.8;
-      x.fillRect(cx+2,py(drl),bw,h); x.strokeRect(cx+2,py(drl),bw,h);
-    }
-    x.fillStyle=DW.muted; x.textAlign="center"; x.font=dwF(9.5,false);
-    x.fillText(r.year, cx, PB+16);
-  });
-  x.strokeStyle=DW.divLine; x.lineWidth=1;
-  x.beginPath(); x.moveTo(PL,PB); x.lineTo(PR,PB); x.stroke();
-  // legend
-  let lx=PL+pw/2-40, lY=PB+32;
-  x.fillStyle=DW.coral; x.fillRect(lx,lY-8,14,10);
-  x.fillStyle=DW.muted; x.textAlign="left"; x.font=dwF(9.5,false);
-  x.fillText("MiSIR",lx+18,lY); lx+=18+x.measureText("MiSIR").width+18;
-  if(hasDrl){
-    x.fillStyle=DW.amberSoft; x.strokeStyle=DW.amber; x.lineWidth=0.8;
-    x.fillRect(lx,lY-8,14,10); x.strokeRect(lx,lY-8,14,10);
-    x.fillStyle=DW.muted; x.fillText("DRLs",lx+18,lY);
-  }
-}
-
-// ── One procedure page (line chart + bar chart) ───────────
-function dwProcPage(pages, proc, monthData, yearData, drl, intlRefs, pageIdx, totalPages) {
-  const x = dwPage(pages);
-  dwHeader(x,"",totalPages,pageIdx);
-  const nm = {
-    "AVM Embolization":"AVM Embolization", "Aneurysm Embolization":"Aneurysm Embolization"
-  }[proc]||proc;
-  // Monthly section
-  let Y = dwSectionTitle(x, `P50 DAP รายเดือน — ${nm}`, 38);
-  if(drl){
-    x.fillStyle=DW.muted; x.font=dwF(10.5,false); x.textAlign="left";
-    x.fillText(`DRLs ประเทศไทย = ${drl.toFixed(2)} Gy·cm²`, 40, Y+10);
-    Y+=22;
-  } else {
-    x.fillStyle=DW.muted; x.font=dwF(10.5,false); x.textAlign="left";
-    x.fillText("ไม่มีค่า DRLs อ้างอิงสำหรับหัตถการนี้", 40, Y+10); Y+=22;
-  }
-  const refColors={"Thailand":"#E84C4C","Japan":"#FF8800","USA":"#006600","France":"#4444CC","Spain":"#AA6600","Germany":"#CC44AA","SIR":"#008888","South Korea":"#884400"};
-  const refs=Object.entries(INTL_REFS[proc]||{}).filter(([k])=>k!=="Thailand").map(([k,v])=>({name:k,v,color:refColors[k]||"#888888"}));
-  dwLineChart(x, {x:30,y:Y,w:DW.W-60,h:310}, monthData, refs, drl);
-  Y += 340;
-  // Yearly section
-  Y = dwSectionTitle(x, `เปรียบเทียบรายปี — ${nm}`, Y);
-  dwBarChart(x, {x:30,y:Y,w:DW.W-60,h:DW.H-Y-30}, yearData, drl);
-}
-
-// ── Ka,r page (match ธีม print layout) ─────────────────────
-function dwKarPage(pages, karRows, events, fromYm, toYm, pageIdx, totalPages, threshold) {
-  const x = dwPage(pages);
-  dwHeader(x,"",totalPages,pageIdx);
-
-  // Title
-  x.fillStyle=DW.dark; x.textAlign="left"; x.font=dwF(17,true);
-  const t1="จำนวนผู้ป่วยที่ได้รับปริมาณรังสี Reference air kerma (K";
-  const t4=`) ≥ ${threshold||3} Gy`;
-  x.fillText(t1, 40, 50); const w1=x.measureText(t1).width;
-  x.font=dwF(11.5,true); x.fillText("a,r", 40+w1, 54);
-  const w2=x.measureText("a,r").width;
-  x.font=dwF(17,true); x.fillStyle=DW.tHead; x.fillText(t4, 40+w1+w2, 50);
-  // divider
-  x.strokeStyle=DW.divLine; x.lineWidth=1;
-  x.beginPath(); x.moveTo(40,64); x.lineTo(DW.W-40,64); x.stroke();
-
-  // ── ตารางปี (ซ้าย) ──
-  const tX=40, tY=80, cW1=140, cW2=170, rh=28, hh=44;
-  // header
-  x.fillStyle=DW.tHead; x.fillRect(tX,tY,cW1+cW2,hh);
-  x.fillStyle="#FFFFFF"; x.textAlign="center"; x.font=dwF(11.5,true);
-  x.fillText("ปี",tX+cW1/2,tY+17);
-  x.fillText("จำนวนผู้ป่วยที่ได้รับ",tX+cW1+cW2/2,tY+16);
-  x.fillText("ปริมาณรังสี ≥ 3 Gy",tX+cW1+cW2/2,tY+32);
-  // rows
-  karRows.forEach((r,i)=>{
-    const ry=tY+hh+i*rh;
-    x.fillStyle=i%2?DW.tRowB:DW.tRowA; x.fillRect(tX,ry,cW1+cW2,rh);
-    x.fillStyle=DW.dark; x.textAlign="center"; x.font=dwF(11.5,false);
-    x.fillText(`พ.ศ.${r.be}`,tX+cW1/2,ry+rh*0.65);
-    x.font=dwF(11.5,r.count>0);
-    x.fillStyle=r.count>0?DW.dark:DW.muted;
-    x.fillText(String(r.count),tX+cW1+cW2/2,ry+rh*0.65);
-  });
-
-  // ── การ์ดเหตุการณ์ (ขวา) ──
-  const cX=tX+cW1+cW2+28, cW=DW.W-cX-40;
-  const N=Math.max(1,events.length);
-  const topY=80, availH=DW.H-topY-28;
-  const wts=events.map(e=>e.note?1.45:1);
-  const totW=wts.reduce((a,b)=>a+b,0)||1;
-  const unit=(availH-4*(N-1))/totW;
-  let cy=topY;
-  events.forEach((e,i)=>{
-    const cH=Math.max(20,Math.min(60,unit*wts[i]));
-    const t=N===1?0:i/(N-1);
-    // interpolate coral colors
-    const lerp=(a,b,t)=>Math.round(a+(b-a)*Math.max(0,Math.min(1,t)));
-    const hexCols=[[0xFA,0xDC,0xD9],[0xE8,0x83,0x6F]];
-    const rgb=hexCols[0].map((a,j)=>lerp(a,hexCols[1][j],t));
-    x.fillStyle=`rgb(${rgb.join(',')})`;
-    dwRR(x,cX,cy,cW,cH,6); x.fill();
-    const dark=t>0.65;
-    const yMain=e.note?cy+cH*0.42:cy+cH/2+5.5;
-    const fs=Math.min(12.5, cH*(e.note?0.28:0.40));
-    x.fillStyle=dark?"#FFFFFF":"#1A2733"; x.textAlign="left";
-    x.font=dwF(fs,true); x.fillText(e.date, cX+12, yMain);
-    x.font=dwF(fs,false); x.fillText(e.proc, cX+90, yMain);
-    // Ka,r value
-    let px2=cX+cW-148;
-    x.font=dwF(fs,false); x.fillText(": K",px2,yMain); const wk=x.measureText(": K").width;
-    x.font=dwF(fs*0.68,false); x.fillText("a,r",px2+wk,yMain+3.5); const wk2=x.measureText("a,r").width;
-    x.font=dwF(fs,false); x.fillText(` = ${e.kar.toFixed(2)} Gy`,px2+wk+wk2,yMain);
-    // HN (small)
-    if(e.hn){
-      x.font=dwF(fs*0.72,false); x.fillStyle=dark?"#FFE4DC":"#7A7A7A";
-      x.fillText(`HN ${e.hn}`, cX+12, e.note?cy+cH*0.76:cy+cH*0.82);
-    }
-    if(e.note){
-      x.font=dwF(fs*0.75,false); x.fillStyle=dark?"#FFE4DC":"#7A7A7A";
-      x.fillText(e.note, cX+90, cy+cH*0.76);
-    }
-    cy+=cH+4;
-  });
-  if(!events.length){
-    x.fillStyle=DW.muted; x.textAlign="center"; x.font=dwF(13,false);
-    x.fillText("ไม่พบผู้ป่วยที่ได้รับ Ka,r ≥ 3 Gy ในช่วงเวลานี้", cX+cW/2, topY+availH/2);
-  }
-
-  // Footer note
-  x.fillStyle=DW.muted; x.textAlign="left"; x.font=dwF(9,false);
-  x.fillText("file:///Dose Watch Dashboard", 30, DW.H-10);
-}
-
-// ── Master builder ─────────────────────────────────────────
-async function buildDashboardPDF(P) {
-  const { monthly, yearlyAll, karRows, karEvents, fromYm, toYm, threshold } = P;
-  const pages = [];
-
-  // Count total pages: 1 cover + N procs (1 per proc) + 1 Ka,r
-  const totalPages = 1 + PROC_ORDER.length + 1;
-
-  // 1. Cover
-  dwCoverPage(pages, fromYm, toYm, totalPages);
-
-  // 2. Each procedure
-  PROC_ORDER.forEach((proc, idx) => {
-    const monthData = monthly[proc] || [];
-    const yearData  = (yearlyAll[proc] || []);
-    const drl = DRLS_THAILAND[proc] || null;
-    dwProcPage(pages, proc, monthData, yearData, drl, INTL_REFS[proc]||{}, idx+2, totalPages);
-  });
-
-  // 3. Ka,r page
-  dwKarPage(pages, karRows, karEvents, fromYm, toYm, totalPages, totalPages, threshold||3);
-
-  // Build PDF
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ orientation:"landscape", unit:"pt", format:[DW.W,DW.H], compress:true });
-  pages.forEach((cv,i)=>{
-    if(i) doc.addPage([DW.W,DW.H],"landscape");
-    doc.addImage(cv.toDataURL("image/jpeg",0.92),"JPEG",0,0,DW.W,DW.H,undefined,"FAST");
-  });
-  return doc;
-}
-
-
-// ===================== ไอคอน / UI ย่อย =====================
 const Icon = ({ path, size = 16, color = "currentColor", strokeWidth = 2 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color}
     strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
@@ -916,9 +406,6 @@ const IconFile = (p) => <Icon {...p} path="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 
 const IconActivity = (p) => <Icon {...p} path="M22 12h-4l-3 9L9 3l-3 9H2" />;
 const IconFilter = (p) => <Icon {...p} path="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />;
 const IconArrowRight = (p) => <Icon {...p} path="M5 12h14M12 5l7 7-7 7" />;
-const IconDatabase = (p) => <Icon {...p} path="M12 2a9 3 0 0 0-9 3v14a9 3 0 0 0 18 0V5a9 3 0 0 0-9-3zM3 5a9 3 0 0 0 18 0M3 12a9 3 0 0 0 18 0" />;
-const IconSave = (p) => <Icon {...p} path="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2zM17 21v-8H7v8M7 3v5h8" />;
-const IconTrash = (p) => <Icon {...p} path="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />;
 
 function StatCard({ label, value, tone = "default", icon: IconComp }) {
   const toneMap = {
@@ -958,93 +445,77 @@ const btnStyle = (bg) => ({
 });
 const dateInputStyle = { border: "1px solid #DDE4E8", borderRadius: 7, padding: "6px 10px", fontSize: 13, color: "#1A2733" };
 
-// ===================== แอปหลัก =====================
 function App() {
-  const [db, setDb] = useState(() => loadDB());
+  const [exams, setExams] = useState([]);
+  const [fileName, setFileName] = useState(null);
+  const [loadState, setLoadState] = useState("idle");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [warnings, setWarnings] = useState([]);
   const [threshold, setThreshold] = useState(3);
   const [selectedProc, setSelectedProc] = useState("TACE");
-  const [dateFrom, setDateFrom] = useState(""); // 'YYYY-MM'
+  const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [showIntlRefs, setShowIntlRefs] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
-  const [viewMode, setViewMode] = useState("dashboard"); // 'manage' | 'dashboard'
-  const [loadState, setLoadState] = useState("idle");
-  const [errorMsg, setErrorMsg] = useState("");
-  const [flash, setFlash] = useState("");
+  const [viewMode, setViewMode] = useState("loading"); // 'loading' | 'upload' | 'dashboard'
   const fileInputRef = useRef(null);
-  const restoreInputRef = useRef(null);
 
-  const commitDb = useCallback((next) => {
-    setDb(next);
-    const ok = saveDBtoStorage(next);
-    if (!ok) setFlash("⚠️ บันทึกลงเครื่องไม่สำเร็จ (พื้นที่ localStorage อาจเต็ม) — แนะนำให้กด 'สำรองข้อมูล' เก็บไฟล์ไว้");
+  // Load from Supabase on mount
+  React.useEffect(() => {
+    supaLoad().then(saved => {
+      if (saved && saved.exams_json && saved.exams_json.length > 0) {
+        setExams(saved.exams_json);
+        setFileName(saved.file_name || "ข้อมูลจาก cloud");
+        if (saved.date_from) setDateFrom(saved.date_from);
+        if (saved.date_to)   setDateTo(saved.date_to);
+        setViewMode("dashboard");
+      } else {
+        setViewMode("upload");
+      }
+    });
   }, []);
 
-  // ---- นำเข้าไฟล์ (ตรวจว่าเป็น raw หรือ ไฟล์สรุป แล้วเพิ่มแบบสะสม) ----
   const handleFile = useCallback((file) => {
-    setLoadState("loading"); setErrorMsg(""); setFlash("");
+    setLoadState("loading");
+    setErrorMsg("");
     const reader = new FileReader();
     reader.onload = (evt) => {
       try {
         const data = new Uint8Array(evt.target.result);
         const wb = XLSX.read(data, { type: "array", cellDates: true });
-        const isAggregated = wb.SheetNames.some(n => n.indexOf("Monthly_") === 0);
+        const sheetName = wb.SheetNames[0];
+        const sheet = wb.Sheets[sheetName];
 
-        if (isAggregated) {
-          // ---- ไฟล์สรุปสำเร็จรูป ----
-          const agg = parseAggregatedWorkbook(wb);
-          const next = JSON.parse(JSON.stringify(db));
-          for (const proc of Object.keys(agg.monthly)) {
-            next.importedMonthly[proc] = { ...(next.importedMonthly[proc] || {}), ...agg.monthly[proc] };
-          }
-          for (const proc of Object.keys(agg.yearly)) {
-            next.importedYearly[proc] = { ...(next.importedYearly[proc] || {}), ...agg.yearly[proc] };
-          }
-          next.importedKar = { ...(next.importedKar || {}), ...agg.kar };
-          next.history = [...(next.history || []), {
-            id: Date.now(), kind: "agg", fileName: file.name, addedAt: new Date().toISOString(),
-            summary: `ไฟล์สรุป: อัปเดต ${agg.monthsFound} จุดข้อมูลรายเดือน`,
-          }];
-          commitDb(next);
-          setFlash(`✓ เพิ่มข้อมูลจากไฟล์สรุป "${file.name}" แล้ว (อัปเดต ${agg.monthsFound} จุดข้อมูลรายเดือน)`);
-          setLoadState("ready");
-          setViewMode("dashboard");
-        } else {
-          // ---- raw Dose Report ----
-          const sheetName = wb.SheetNames[0];
-          const sheet = wb.Sheets[sheetName];
-          let maxR = 0, maxC = 0, minR = Infinity, minC = Infinity, cellCount = 0;
-          for (const addr in sheet) {
-            if (addr[0] === "!") continue;
-            cellCount++;
-            const dec = XLSX.utils.decode_cell(addr);
-            if (dec.r > maxR) maxR = dec.r; if (dec.c > maxC) maxC = dec.c;
-            if (dec.r < minR) minR = dec.r; if (dec.c < minC) minC = dec.c;
-          }
-          if (cellCount > 0) sheet["!ref"] = XLSX.utils.encode_range({ s: { r: minR, c: minC }, e: { r: maxR, c: maxC } });
-          const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
-          const { exams: processed, warnings: w, totalRaw, totalDeduped } = processRawData(rows);
-          if (!processed.length) {
-            setLoadState("error");
-            setErrorMsg("ไม่พบข้อมูลที่อ่านได้ในไฟล์ — ถ้าเป็น raw Dose Report ต้องมีคอลัมน์ A#, Date Performed, Procedure, DAP (Total) Gy-cm2 หรือถ้าเป็นไฟล์สรุปต้องมีชีต Monthly_*");
-            return;
-          }
-          const beforeCount = db.addedExams.length;
-          const merged = dedupeExams([...db.addedExams, ...processed]);
-          const added = merged.length - beforeCount;
-          const next = JSON.parse(JSON.stringify(db));
-          next.addedExams = merged;
-          const dates = processed.map(e => e.dateStr).filter(Boolean).sort();
-          const span = dates.length ? `${dates[0]} ถึง ${dates[dates.length - 1]}` : "-";
-          next.history = [...(next.history || []), {
-            id: Date.now(), kind: "raw", fileName: file.name, addedAt: new Date().toISOString(),
-            summary: `raw report: ${totalDeduped} exam (ช่วง ${span}) — เพิ่มใหม่ ${added} รายการ`,
-          }];
-          commitDb(next);
-          setFlash(`✓ เพิ่มข้อมูลจาก "${file.name}" แล้ว — อ่าน ${totalRaw} แถว, เป็น ${totalDeduped} exam, เพิ่มใหม่ ${added} รายการ (ที่ซ้ำถูกตัดออก)`);
-          setLoadState("ready");
-          setViewMode("dashboard");
+        let maxR = 0, maxC = 0, minR = Infinity, minC = Infinity, cellCount = 0;
+        for (const addr in sheet) {
+          if (addr[0] === "!") continue;
+          cellCount++;
+          const dec = XLSX.utils.decode_cell(addr);
+          if (dec.r > maxR) maxR = dec.r;
+          if (dec.c > maxC) maxC = dec.c;
+          if (dec.r < minR) minR = dec.r;
+          if (dec.c < minC) minC = dec.c;
         }
+        if (cellCount > 0) {
+          sheet["!ref"] = XLSX.utils.encode_range({ s: { r: minR, c: minC }, e: { r: maxR, c: maxC } });
+        }
+        const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
+        const { exams: processed, warnings: w, totalRaw, totalDeduped } = processRawData(rows);
+        if (!processed.length) {
+          setLoadState("error");
+          setErrorMsg("ไม่พบข้อมูลที่อ่านได้ในไฟล์ กรุณาตรวจสอบรูปแบบคอลัมน์");
+          return;
+        }
+        setExams(processed);
+        setWarnings(w.concat([`อ่านข้อมูล ${totalRaw} แถว → เหลือ ${totalDeduped} exam หลังตัดรายการซ้ำ`]));
+        setFileName(file.name);
+        setLoadState("ready");
+        const dates = processed.map(e => e.dateStr).sort();
+        setDateFrom(dates[0]);
+        setDateTo(dates[dates.length - 1]);
+        setViewMode("dashboard");
+        // Save to Supabase automatically
+        supaSave(processed, file.name, dates[0], dates[dates.length - 1]);
       } catch (err) {
         setLoadState("error");
         setErrorMsg("ไม่สามารถอ่านไฟล์ได้: " + err.message);
@@ -1052,7 +523,7 @@ function App() {
     };
     reader.onerror = () => { setLoadState("error"); setErrorMsg("เกิดข้อผิดพลาดขณะอ่านไฟล์"); };
     reader.readAsArrayBuffer(file);
-  }, [db, commitDb]);
+  }, []);
 
   const onDrop = useCallback((e) => {
     e.preventDefault();
@@ -1060,243 +531,218 @@ function App() {
     if (file) handleFile(file);
   }, [handleFile]);
 
-  // ---- สำรอง / กู้คืน / ล้างข้อมูล ----
-  const backupData = useCallback(() => {
-    const blob = new Blob([JSON.stringify(db, null, 2)], { type: "application/json" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    const stamp = new Date().toISOString().slice(0, 10);
-    link.download = `dosewatch_backup_${stamp}.json`;
-    link.click();
-  }, [db]);
-
-  const restoreData = useCallback((file) => {
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      try {
-        const obj = JSON.parse(evt.target.result);
-        if (!obj || typeof obj !== "object" || !Array.isArray(obj.addedExams)) {
-          setFlash("⚠️ ไฟล์สำรองไม่ถูกต้อง"); return;
-        }
-        const next = { ...emptyDB(), ...obj };
-        commitDb(next);
-        setFlash(`✓ กู้คืนข้อมูลจากไฟล์สำรองแล้ว (${next.addedExams.length} exam)`);
-        setViewMode("dashboard");
-      } catch (e) { setFlash("⚠️ อ่านไฟล์สำรองไม่ได้: " + e.message); }
-    };
-    reader.readAsText(file);
-  }, [commitDb]);
-
-  const resetAdded = useCallback(() => {
-    if (!window.confirm("ต้องการล้างข้อมูลที่เพิ่มเองทั้งหมดหรือไม่?\n(ฐานข้อมูลตั้งต้นที่ฝังในแอปจะยังอยู่ครบ)")) return;
-    commitDb(emptyDB());
-    setFlash("✓ ล้างข้อมูลที่เพิ่มเองแล้ว — เหลือเฉพาะฐานข้อมูลตั้งต้น");
-  }, [commitDb]);
-
-  // ---- ข้อมูลรวม (baseline + added) ----
-  const monthlyAll = useMemo(() => buildMergedMonthly(db), [db]);
-  const yearlyAll = useMemo(() => buildMergedYearly(db), [db]);
-  const karYearly = useMemo(() => buildMergedKar(db), [db]);
-
-  // ช่วงเดือนที่มี
-  const spanYms = useMemo(() => {
-    const s = new Set();
-    PROC_ORDER.forEach(p => (monthlyAll[p] || []).forEach(r => s.add(r.ym)));
-    return [...s].sort();
-  }, [monthlyAll]);
-  const minYm = spanYms[0] || "2024-10";
-  const maxYm = spanYms[spanYms.length - 1] || "2026-07";
-  const fromYm = dateFrom || minYm;
-  const toYm = dateTo || maxYm;
-
-  const filteredMonthly = useMemo(() => {
-    const out = {};
-    for (const proc of PROC_ORDER) {
-      out[proc] = (monthlyAll[proc] || []).filter(r => r.ym >= fromYm && r.ym <= toYm);
-    }
-    return out;
-  }, [monthlyAll, fromYm, toYm]);
-
-  const addedInRange = useMemo(() => {
-    return db.addedExams.filter(e => e.dateStr && e.dateStr.slice(0, 7) >= fromYm && e.dateStr.slice(0, 7) <= toYm);
-  }, [db.addedExams, fromYm, toYm]);
+  // Dynamic filter based on selected date range
+  const filteredExams = useMemo(() => {
+    if (!dateFrom || !dateTo) return exams;
+    return exams.filter(e => e.dateStr >= dateFrom && e.dateStr <= dateTo);
+  }, [exams, dateFrom, dateTo]);
 
   const exceedances = useMemo(() => {
-    return addedInRange.filter(e => e.kar_Gy !== null && e.kar_Gy >= threshold).sort((a, b) => b.kar_Gy - a.kar_Gy);
-  }, [addedInRange, threshold]);
+    return filteredExams
+      .filter(e => e.kar_Gy !== null && e.kar_Gy >= threshold)
+      .sort((a, b) => b.kar_Gy - a.kar_Gy);
+  }, [filteredExams, threshold]);
 
-  const overallStats = useMemo(() => {
-    const procCount = {};
-    for (const e of addedInRange) { if (!e.category) continue; procCount[e.category] = (procCount[e.category] || 0) + 1; }
-    return {
-      total: addedInRange.length,
-      maxKar: addedInRange.reduce((m, e) => (e.kar_Gy !== null && e.kar_Gy > m ? e.kar_Gy : m), 0),
-      procCount,
-    };
-  }, [addedInRange]);
+  // Aggregate monthly data purely from filteredExams
+  const combinedMonthly = useMemo(() => {
+    const out = {};
+    const catGrouped = {};
 
-  const chartData = filteredMonthly[selectedProc] || [];
+    for (const e of filteredExams) {
+      if (!e.category || !PROC_ORDER.includes(e.category)) continue;
+      const ym = e.dateStr.slice(0, 7);
+      catGrouped[e.category] = catGrouped[e.category] || {};
+      catGrouped[e.category][ym] = catGrouped[e.category][ym] || [];
+      catGrouped[e.category][ym].push(e.dap);
+    }
+
+    for (const proc of PROC_ORDER) {
+      const yms = Object.keys(catGrouped[proc] || {}).sort();
+      const rows = yms.map(ym => {
+        const label = monthLabel(ym);
+        const med = median(catGrouped[proc][ym]);
+        const row = {
+          month: label,
+          ym: ym,
+          MiSIR: med !== null ? Number(med.toFixed(2)) : null,
+          n: catGrouped[proc][ym].length
+        };
+        const refs = INTL_REFS[proc] || {};
+        for (const [refName, refVal] of Object.entries(refs)) {
+          row[refName] = refVal;
+        }
+        return row;
+      });
+      out[proc] = rows;
+    }
+    return out;
+  }, [filteredExams]);
+
+  // Aggregate yearly data purely from filteredExams
+  const combinedYearly = useMemo(() => {
+    const out = {};
+    const catYearGrouped = {};
+
+    for (const e of filteredExams) {
+      if (!e.category || !PROC_ORDER.includes(e.category)) continue;
+      const yrCE = e.dateStr.slice(0, 4);
+      const yrBE = String(toBuddhistYear(Number(yrCE)));
+      catYearGrouped[e.category] = catYearGrouped[e.category] || {};
+      catYearGrouped[e.category][yrBE] = catYearGrouped[e.category][yrBE] || [];
+      catYearGrouped[e.category][yrBE].push(e.dap);
+    }
+
+    for (const proc of PROC_ORDER) {
+      const yrs = Object.keys(catYearGrouped[proc] || {}).sort();
+      const hasDRL = DRLS_THAILAND.hasOwnProperty(proc);
+      const rows = yrs.map(yr => {
+        const med = median(catYearGrouped[proc][yr]);
+        return {
+          year: `พ.ศ.${yr}`,
+          MiSIR: med !== null ? Number(med.toFixed(2)) : null,
+          DRLs: hasDRL ? DRLS_THAILAND[proc] : null,
+        };
+      });
+      out[proc] = rows;
+    }
+    return out;
+  }, [filteredExams]);
+
+  const chartData = combinedMonthly[selectedProc] || [];
   const refNames = Object.keys(INTL_REFS[selectedProc] || {});
   const drlValue = DRLS_THAILAND[selectedProc];
 
-  // ---- Export Excel ----
+  const overallStats = useMemo(() => {
+    const procCount = {};
+    for (const e of filteredExams) {
+      if (!e.category) continue;
+      procCount[e.category] = (procCount[e.category] || 0) + 1;
+    }
+    return {
+      total: filteredExams.length,
+      maxKar: filteredExams.reduce((m, e) => (e.kar_Gy !== null && e.kar_Gy > m ? e.kar_Gy : m), 0),
+      procCount,
+    };
+  }, [filteredExams]);
+
+  // Enhanced Excel Export matching design in Image 2
   const exportExcel = useCallback(async () => {
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "Dose Watch Dashboard";
 
+    // 1. README Sheet
     const wsReadme = workbook.addWorksheet("README");
     wsReadme.addRow(["รายงานปริมาณรังสีในหัตถการรังสีร่วมรักษา (สร้างจากแดชบอร์ด)"]);
-    wsReadme.addRow([`ช่วงเดือนที่เลือก: ${fromYm} ถึง ${toYm}`]);
-    wsReadme.addRow([`ข้อมูลที่เพิ่มเอง (raw exam): ${db.addedExams.length} รายการ`]);
+    wsReadme.addRow([`ไฟล์ต้นฉบับ: ${fileName || "-"}`]);
+    wsReadme.addRow([`ช่วงเวลาข้อมูลที่เลือก: ${dateFrom || "-"} ถึง ${dateTo || "-"}`]);
     wsReadme.addRow([]);
     wsReadme.addRow(["Sheet", "เนื้อหา"]);
-    wsReadme.addRow(["Exceedances", `รายชื่อผู้ป่วยที่ Ka,r ≥ ${threshold} Gy (baseline + raw ที่เพิ่มเอง, มี HN/ชื่อ)`]);
-    wsReadme.addRow(["Exceedances_Baseline_Yearly", "สรุปจำนวนผู้ป่วยเกินเกณฑ์รายปี (baseline + raw)"]);
-    PROC_ORDER.forEach(p => wsReadme.addRow([`Monthly_${p}`, `ข้อมูล P50 DAP รายเดือน และกราฟ - ${p}`]));
-    wsReadme.addRow(["Overview", "เปรียบเทียบทุกหัตถการ (ค่าล่าสุดรายปี) กับ DRLs"]);
+    wsReadme.addRow(["Exceedances", `รายชื่อผู้ป่วยที่ Ka,r ≥ ${threshold} Gy`]);
+    PROC_ORDER.forEach(p => {
+      wsReadme.addRow([`Monthly_${p}`, `ข้อมูล P50 DAP รายเดือน และกราฟเปรียบเทียบ - ${p}`]);
+    });
+    wsReadme.addRow(["Overview", "เปรียบเทียบทุกหัตถการกับ DRLs"]);
 
-    // ── ชีท Exceedances: baseline + raw ──
+    // 2. Exceedances Sheet
     const wsExc = workbook.addWorksheet("Exceedances");
-    wsExc.addRow([`ผู้ป่วยที่ได้รับ Ka,r ≥ 3 Gy (จากข้อมูล raw exam ที่เพิ่มเองทั้งหมด รวมทุกช่วงเวลา)`]);
-    wsExc.addRow([`* หมายเหตุ: จำนวนผู้ป่วยเกินเกณฑ์จากฐานข้อมูลตั้งต้น (ก่อนมี raw exam) แสดงแยกในชีต "Exceedances_Baseline_Yearly" เนื่องจากไม่มีชื่อ/HN ผู้ป่วยรายบุคคลบันทึกไว้ในฐานข้อมูลตั้งต้น`]);
-    wsExc.addRow([]);
-    const excHdrRow = wsExc.addRow(["HN", "ชื่อผู้ป่วย", "วันที่", "หัตถการ", "Ka,r (Gy)", "DAP (Gy·cm2)", "อยู่ในช่วงที่เลือกบนแดชบอร์ด"]);
-    excHdrRow.font = { bold: true, color: { argb: "FFFFFF" } };
-    excHdrRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "1E4F7A" } };
-    excHdrRow.eachCell(c => { c.alignment = { horizontal: "center", vertical: "middle", wrapText: true }; });
-    // baseline เคสจากไฟล์ประวัติ
-    BASELINE_KAR_EVENTS.forEach(ev => {
-      const inRange = ev.date.slice(6) >= fromYm.slice(2,4) || false; // rough
-      const ceY = ev.be - 543;
-      const inR = (ceY + "-" + ev.date.slice(3,5)) >= fromYm && (ceY + "-" + ev.date.slice(3,5)) <= toYm;
-      const row = wsExc.addRow([ev.hn||"-", ev.name||"-", ev.date, ev.proc, ev.kar, ev.dap||"-", inR?"ใช่":"ไม่"]);
-      if (ev.note) { row.getCell(4).note = ev.note; }
-      row.getCell(7).font = { color: { argb: inR ? "006400" : "888888" } };
-    });
-    // raw exam จากแอป
+    wsExc.addRow(["HN", "ชื่อผู้ป่วย", "วันที่", "หัตถการ", "Ka,r (Gy)", "DAP (Gy·cm2)"]);
+    const headerRow = wsExc.getRow(1);
+    headerRow.font = { bold: true, color: { argb: "FFFFFF" } };
+    headerRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "1E4F7A" } };
+
     exceedances.forEach(e => {
-      const ceY = Number(e.dateStr.slice(0,4));
-      const ym  = e.dateStr.slice(0,7);
-      const inR = ym >= fromYm && ym <= toYm;
-      const d2  = e.dateStr.split('-'); const be2 = (ceY+543)%100;
-      const dateTh = `${d2[2]}/${d2[1]}/${String(be2).padStart(2,'0')}`;
-      const row = wsExc.addRow([e.mrn, e.patientName, dateTh, e.procedureRaw, Number(e.kar_Gy.toFixed(2)), Number(e.dap.toFixed(2)), inR?"ใช่":"ไม่"]);
-      row.getCell(7).font = { color: { argb: inR ? "006400" : "888888" } };
+      wsExc.addRow([e.mrn, e.patientName, e.dateStr, e.procedureRaw, Number(e.kar_Gy.toFixed(2)), Number(e.dap.toFixed(2))]);
     });
-    wsExc.getColumn(1).width = 12; wsExc.getColumn(2).width = 28;
-    wsExc.getColumn(3).width = 12; wsExc.getColumn(4).width = 22;
-    wsExc.getColumn(5).width = 12; wsExc.getColumn(6).width = 14;
-    wsExc.getColumn(7).width = 22;
 
-    // ── ชีท Exceedances_Baseline_Yearly: สรุปรายปี ──
-    const wsExcY = workbook.addWorksheet("Exceedances_Baseline_Yearly");
-    wsExcY.addRow(["จำนวนผู้ป่วยที่ได้รับ Ka,r ≥ 3 Gy รายปี (ฐานข้อมูลตั้งต้น + raw exam)"]);
-    wsExcY.getRow(1).font = { bold: true, size: 12 };
-    wsExcY.addRow([]);
-    const excYHdr = wsExcY.addRow(["ปี พ.ศ.", "จำนวนผู้ป่วย (ฐานข้อมูล)", "จำนวนผู้ป่วย (raw exam เพิ่ม)", "รวม"]);
-    excYHdr.font = { bold: true, color: { argb:"FFFFFF" } };
-    excYHdr.fill = { type:"pattern", pattern:"solid", fgColor:{ argb:"1E4F7A" } };
-    excYHdr.eachCell(c => { c.alignment = { horizontal:"center", vertical:"middle" }; });
-    const rawByBE = {};
-    exceedances.forEach(e => { const be = toBuddhistYear(Number(e.dateStr.slice(0,4))); rawByBE[be]=(rawByBE[be]||0)+1; });
-    BASELINE_KAR3GY.forEach(([be, baseN]) => {
-      const rawN = rawByBE[be] || 0;
-      const row  = wsExcY.addRow([`พ.ศ.${be}`, baseN, rawN, baseN + rawN]);
-      [2,3,4].forEach(c => row.getCell(c).alignment = { horizontal:"center" });
-    });
-    wsExcY.getColumn(1).width = 14; wsExcY.getColumn(2).width = 26;
-    wsExcY.getColumn(3).width = 28; wsExcY.getColumn(4).width = 10;
-
+    // 3. Monthly Sheets with Formatted Tables & Embedded Charts (Image 2 style)
     for (const proc of PROC_ORDER) {
       const wsName = `Monthly_${proc}`.slice(0, 31);
       const ws = workbook.addWorksheet(wsName);
+
       const refs = INTL_REFS[proc] || {};
       const refKeys = Object.keys(refs);
-      const monthData = filteredMonthly[proc] || [];
+      const monthData = combinedMonthly[proc] || [];
 
-      ws.getCell("A1").value = "P50 DAP รายเดือน";
-      ws.getCell("A1").font = { name: "Inter", size: 16, bold: true, color: { argb: "0F3B4D" } };
-      ws.getCell("A2").value = `หน่วย: Gy·cm2 | ช่วง ${fromYm} ถึง ${toYm}`;
-      ws.getCell("A2").font = { name: "Inter", size: 10, italic: true, color: { argb: "5B6B75" } };
+      // Title rows
+      const titleCell = ws.getCell("A1");
+      titleCell.value = "P50 DAP รายเดือน";
+      titleCell.font = { name: "Inter", size: 16, bold: true, color: { argb: "0F3B4D" } };
 
+      const subCell = ws.getCell("A2");
+      subCell.value = `หน่วย: Gy·cm2 | ข้อมูลช่วงเวลา (${dateFrom} ถึง ${dateTo})`;
+      subCell.font = { name: "Inter", size: 10, italic: true, color: { argb: "5B6B75" } };
+
+      // Table Headers
       const headers = ["เดือน/ปี", "MiSIR", ...refKeys];
       const hRow = ws.getRow(4);
       headers.forEach((h, colIdx) => {
         const cell = hRow.getCell(colIdx + 1);
-        cell.value = h; cell.font = { bold: true, color: { argb: "FFFFFF" } };
+        cell.value = h;
+        cell.font = { bold: true, color: { argb: "FFFFFF" } };
         cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "1E4F7A" } };
         cell.alignment = { horizontal: "center", vertical: "middle" };
       });
+
+      // Data Rows
       monthData.forEach((r, rowIdx) => {
         const row = ws.getRow(5 + rowIdx);
-        row.getCell(1).value = r.month; row.getCell(1).alignment = { horizontal: "center" };
+        row.getCell(1).value = r.month;
+        row.getCell(1).alignment = { horizontal: "center" };
+
         const misirCell = row.getCell(2);
-        misirCell.value = r.MiSIR; misirCell.numFmt = "0.00"; misirCell.font = { bold: true };
-        refKeys.forEach((rk, kIdx) => { const c = row.getCell(3 + kIdx); c.value = refs[rk]; c.numFmt = "0.00"; });
+        misirCell.value = r.MiSIR;
+        misirCell.numFmt = "0.00";
+        misirCell.font = { bold: true };
+
+        refKeys.forEach((rk, kIdx) => {
+          const c = row.getCell(3 + kIdx);
+          c.value = refs[rk];
+          c.numFmt = "0.00";
+        });
       });
 
+      // Render chart image and embed into Excel sheet
       const chartBase64 = await createChartImageBase64(proc, monthData, refKeys);
-      const imageId = workbook.addImage({ base64: chartBase64, extension: "png" });
-      ws.addImage(imageId, { tl: { col: refKeys.length + 3, row: 3 }, ext: { width: 680, height: 350 } });
+      const imageId = workbook.addImage({
+        base64: chartBase64,
+        extension: "png",
+      });
 
-      ws.getColumn(1).width = 14; ws.getColumn(2).width = 12;
+      ws.addImage(imageId, {
+        tl: { col: refKeys.length + 3, row: 3 },
+        ext: { width: 680, height: 350 }
+      });
+
+      // Adjust Column Widths
+      ws.getColumn(1).width = 14;
+      ws.getColumn(2).width = 12;
       refKeys.forEach((_, idx) => { ws.getColumn(3 + idx).width = 12; });
     }
 
+    // 4. Overview Sheet
     const wsOv = workbook.addWorksheet("Overview");
-    wsOv.addRow(["หัตถการ", "MiSIR (ค่าล่าสุดรายปี)", "DRLs (ไทย)"]);
+    wsOv.addRow(["หัตถการ", "MiSIR (DAP Median)", "DRLs (ไทย)"]);
     const ovHRow = wsOv.getRow(1);
     ovHRow.font = { bold: true, color: { argb: "FFFFFF" } };
     ovHRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "1E4F7A" } };
+
     PROC_ORDER.forEach(p => {
-      const yr = yearlyAll[p] || [];
-      const last = yr.length ? yr[yr.length - 1].MiSIR : null;
-      wsOv.addRow([p, last !== null ? Number(last.toFixed(2)) : null, DRLS_THAILAND[p] ?? null]);
+      const sub = filteredExams.filter(e => e.category === p);
+      const med = median(sub.map(e => e.dap));
+      wsOv.addRow([p, med !== null ? Number(med.toFixed(2)) : null, DRLS_THAILAND[p] ?? null]);
     });
 
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `dose_report_${fromYm}_to_${toYm}.xlsx`;
+    link.download = `dose_report_${dateFrom}_to_${dateTo}.xlsx`;
     link.click();
-  }, [exceedances, filteredMonthly, yearlyAll, fromYm, toYm, threshold, db.addedExams.length]);
+  }, [exceedances, combinedMonthly, fileName, dateFrom, dateTo, threshold, filteredExams]);
 
-  // ---- Export PDF (รายงานธีมเดียวกับรายงานประจำปี) ----
-  const [pdfBusy, setPdfBusy] = useState(false);
-  const exportPDF = useCallback(async () => {
-    if (pdfBusy) return;
-    setPdfBusy(true);
-    try {
-      const karEvents = BASELINE_KAR_EVENTS
-        .concat(db.addedExams
-          .filter(e => e.dateStr && e.kar_Gy != null && e.kar_Gy >= threshold)
-          .map(e => {
-            const [Y, M, D] = e.dateStr.split("-");
-            return { date: `${D}/${M}/${String(toBuddhistYear(+Y)).slice(-2)}`,
-              be: toBuddhistYear(+Y), hn: e.mrn || "", proc: e.category || "-", kar: e.kar_Gy };
-          }))
-        .sort((a, b) => (a.be - b.be) || a.date.localeCompare(b.date));
-      const karRows = karYearly;
+  const exportPDF = useCallback(() => { window.print(); }, []);
 
-      const doc = await buildDashboardPDF({
-        monthly: filteredMonthly, yearlyAll, karRows, karEvents,
-        fromYm, toYm, threshold,
-      });
-      doc.save(`Dose_Watch_Dashboard_${fromYm}_to_${toYm}.pdf`);
-    } catch (err) {
-      console.error(err);
-      setErrorMsg("สร้าง PDF ไม่สำเร็จ: " + (err && err.message ? err.message : err));
-    } finally {
-      setPdfBusy(false);
-    }
-  }, [pdfBusy, fromYm, toYm, filteredMonthly, yearlyAll, karYearly, db.addedExams, threshold]);
-
-  const importedMonthCount = useMemo(() => {
-    const s = new Set();
-    Object.values(db.importedMonthly).forEach(m => Object.keys(m).forEach(ym => s.add(ym)));
-    return s.size;
-  }, [db.importedMonthly]);
+  const hasData = exams.length > 0;
 
   return (
     <div style={{ fontFamily: "'Inter', -apple-system, sans-serif", background: "#EEF2F4", minHeight: "100vh", color: "#1A2733", padding: "0 0 40px 0" }}>
@@ -1310,13 +756,13 @@ function App() {
             </div>
             <div style={{ fontSize: 16, color: "#5B6B75", marginTop: 8 }}>ข้อมูลเฉพาะช่วงเวลาที่เลือก</div>
             <div style={{ fontSize: 12, color: "#8494A0", marginTop: 30 }}>
-              ช่วง: {fromYm} ถึง {toYm} · สร้างจาก Dose Watch Dashboard
+              ช่วงเวลา: {dateFrom} ถึง {dateTo} · สร้างจาก Dose Watch Dashboard
             </div>
           </div>
 
           {PROC_ORDER.map((proc) => {
-            const monthData = filteredMonthly[proc] || [];
-            const yearData = yearlyAll[proc] || [];
+            const monthData = combinedMonthly[proc] || [];
+            const yearData = combinedYearly[proc] || [];
             const refs = INTL_REFS[proc] || {};
             const rnames = Object.keys(refs);
             const drl = DRLS_THAILAND[proc];
@@ -1366,7 +812,7 @@ function App() {
       {/* ============ SCREEN DASHBOARD ============ */}
       <div className="screen-only">
         <div style={{ background: "linear-gradient(135deg, #0F3B4D 0%, #164E63 100%)", padding: "28px 32px 24px", color: "#fff" }}>
-          <div style={{ maxWidth: 1280, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+          <div style={{ maxWidth: 1280, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <div style={{ width: 34, height: 34, borderRadius: 8, background: "rgba(255,255,255,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <IconActivity size={19} strokeWidth={2.4} color="#7FD4C1" />
@@ -1377,17 +823,18 @@ function App() {
               </div>
             </div>
 
+            {/* Navigation toggle button */}
             <div style={{ display: "flex", gap: 10 }}>
               <button
-                onClick={() => setViewMode("manage")}
+                onClick={() => setViewMode("upload")}
                 style={{
-                  background: viewMode === "manage" ? "rgba(255,255,255,0.25)" : "transparent",
+                  background: viewMode === "upload" ? "rgba(255,255,255,0.25)" : "transparent",
                   color: "#fff", border: "1px solid rgba(255,255,255,0.3)",
                   padding: "7px 14px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer",
                   display: "flex", alignItems: "center", gap: 6
                 }}
               >
-                <IconDatabase size={14} color="#fff" /> จัดการข้อมูล
+                <IconUpload size={14} color="#fff" /> หน้าเพิ่มไฟล์
               </button>
               <button
                 onClick={() => setViewMode("dashboard")}
@@ -1399,7 +846,7 @@ function App() {
                   display: "flex", alignItems: "center", gap: 6
                 }}
               >
-                <IconActivity size={14} color={viewMode === "dashboard" ? "#0F3B4D" : "#fff"} /> แดชบอร์ด <IconArrowRight size={13} color={viewMode === "dashboard" ? "#0F3B4D" : "#fff"} />
+                <IconActivity size={14} color={viewMode === "dashboard" ? "#0F3B4D" : "#fff"} /> หน้าแดชบอร์ด <IconArrowRight size={13} color={viewMode === "dashboard" ? "#0F3B4D" : "#fff"} />
               </button>
             </div>
           </div>
@@ -1407,21 +854,19 @@ function App() {
 
         <div style={{ maxWidth: 1280, margin: "0 auto", padding: "0 32px" }}>
 
-          {flash && (
-            <div style={{ marginTop: 16, background: flash.startsWith("⚠️") ? "#FEF2F2" : "#F0FBF7", border: `1px solid ${flash.startsWith("⚠️") ? "#FCA5A5" : "#99E0C9"}`, color: flash.startsWith("⚠️") ? "#B91C1C" : "#0F6B54", borderRadius: 10, padding: "12px 16px", fontSize: 13, fontWeight: 600 }}>
-              {flash}
+          {/* VIEW 1: UPLOAD PAGE */}
+          {viewMode === "loading" && (
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:300, gap:16 }}>
+              <div style={{ width:40, height:40, border:"4px solid #DDE4E8", borderTopColor:"#0F3B4D", borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />
+              <p style={{ color:"#5B6B75", fontSize:14 }}>กำลังโหลดข้อมูลจาก cloud…</p>
             </div>
           )}
-
-          {/* ========== VIEW: จัดการข้อมูล ========== */}
-          {viewMode === "manage" && (
-            <div style={{ marginTop: 20 }}>
-
-              {/* กล่องอัปโหลด */}
+      {viewMode === "upload" && (
+            <div style={{ marginTop: 28 }}>
               <div
                 onDrop={onDrop}
                 onDragOver={(e) => e.preventDefault()}
-                style={{ border: "2px dashed #B8C6CD", borderRadius: 14, background: "#fff", padding: "44px 24px", textAlign: "center", cursor: "pointer" }}
+                style={{ border: "2px dashed #B8C6CD", borderRadius: 14, background: "#fff", padding: "56px 24px", textAlign: "center", cursor: "pointer" }}
                 onClick={() => fileInputRef.current && fileInputRef.current.click()}
               >
                 <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
@@ -1432,253 +877,207 @@ function App() {
                   </div>
                 </div>
                 <div style={{ fontSize: 16, fontWeight: 700, color: "#0F3B4D", marginBottom: 6 }}>
-                  {loadState === "loading" ? "กำลังประมวลผล..." : "ลากไฟล์ Excel เดือนใหม่มาวาง หรือคลิกเพื่อเลือกไฟล์"}
+                  {loadState === "loading" ? "กำลังประมวลผล..." : "ลากไฟล์ Excel มาวาง หรือคลิกเพื่อเลือกไฟล์"}
                 </div>
-                <div style={{ fontSize: 13, color: "#7C8B95", maxWidth: 620, margin: "0 auto" }}>
-                  รับได้ทั้ง <b>raw Dose Report</b> (มีคอลัมน์ A#, Date Performed, Procedure, DAP…) และ <b>ไฟล์สรุปสำเร็จรูป</b> (มีชีต Monthly_*) — ข้อมูลจะถูก<b>เพิ่มสะสมต่อจากของเดิม</b> โดยอัตโนมัติ
-                </div>
+                <div style={{ fontSize: 13, color: "#7C8B95" }}>รองรับไฟล์ .xlsx จาก Dose Report (ต้องมีคอลัมน์ A#, Date Performed, Procedure, DAP (Total) Gy-cm2)</div>
                 {loadState === "error" && (
                   <div style={{ marginTop: 16, color: "#B91C1C", fontSize: 13.5, fontWeight: 600 }}>{errorMsg}</div>
                 )}
               </div>
 
-              {/* สถานะฐานข้อมูล */}
-              <div style={{ marginTop: 18, background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: "18px 20px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-                  <IconDatabase size={16} color="#0F3B4D" />
-                  <span style={{ fontWeight: 700, fontSize: 14.5 }}>สถานะฐานข้อมูลในแอป</span>
+              {/* Direct Dashboard Link */}
+              <div style={{ marginTop: 20, textAlign: "center", background: "#fff", borderRadius: 12, padding: "20px", border: "1px solid #E2E8ED" }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#0F3B4D", marginBottom: 8 }}>
+                  {hasData ? `ข้อมูลปัจจุบัน: ${fileName} (${exams.length.toLocaleString()} รายการ)` : "ยังไม่มีข้อมูลอัปโหลด หรือต้องการดูแดชบอร์ด"}
                 </div>
-                <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                  <StatCard label="ฐานข้อมูลตั้งต้น (ฝังในแอป)" value={`${BASELINE_MONTH_COUNT} เดือน`} icon={IconDatabase} />
-                  <StatCard label="raw exam ที่เพิ่มเอง" value={db.addedExams.length.toLocaleString()} icon={IconActivity} />
-                  <StatCard label="เดือนจากไฟล์สรุปที่เพิ่ม" value={importedMonthCount} icon={IconSheet} />
-                </div>
-                <div style={{ fontSize: 12.5, color: "#5B6B75", marginTop: 14, lineHeight: 1.7 }}>
-                  · ฐานข้อมูลตั้งต้น: P50 DAP รายเดือน <b>ต.ค. 2567 – ก.ค. 2569</b>, รายปี <b>พ.ศ. 2563–2569</b> และจำนวนผู้ป่วย Ka,r ≥ 3 Gy <b>พ.ศ. 2560–2569</b> (ลบไม่ได้ อยู่ในแอปเสมอ)<br/>
-                  · ข้อมูลที่เพิ่มเองถูกบันทึกไว้ในเครื่องนี้ (เบราว์เซอร์นี้) — เปิดใหม่/ปิดแอปแล้วยังอยู่
-                </div>
-              </div>
-
-              {/* ปุ่มสำรอง/กู้คืน/ล้าง */}
-              <div style={{ marginTop: 16, background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: "16px 20px", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <span style={{ fontSize: 13, fontWeight: 600, color: "#5B6B75", marginRight: 4 }}>สำรอง & กู้คืน:</span>
-                <button onClick={backupData} style={btnStyle("#0F6B54")}><IconSave size={14} /> สำรองข้อมูล (.json)</button>
-                <button onClick={() => restoreInputRef.current && restoreInputRef.current.click()} style={btnStyle("#0F3B4D")}><IconUpload size={14} /> กู้คืนจากไฟล์สำรอง</button>
-                <input ref={restoreInputRef} type="file" accept=".json" style={{ display: "none" }}
-                  onChange={(e) => e.target.files && e.target.files[0] && restoreData(e.target.files[0])} />
-                <div style={{ flex: 1 }} />
-                <button onClick={resetAdded} style={{ ...btnStyle("#fff"), color: "#B91C1C", border: "1px solid #FCA5A5" }}><IconTrash size={14} color="#B91C1C" /> ล้างข้อมูลที่เพิ่มเอง</button>
-              </div>
-
-              {/* ประวัติการเพิ่มข้อมูล */}
-              <div style={{ marginTop: 16, background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", overflow: "hidden" }}>
-                <div style={{ padding: "14px 20px", borderBottom: "1px solid #E2E8ED", fontWeight: 700, fontSize: 14 }}>ประวัติการเพิ่มข้อมูล</div>
-                {(!db.history || db.history.length === 0) ? (
-                  <div style={{ padding: 24, textAlign: "center", color: "#8494A0", fontSize: 13 }}>ยังไม่มีการเพิ่มข้อมูล — แสดงผลจากฐานข้อมูลตั้งต้น</div>
-                ) : (
-                  <div style={{ overflowX: "auto" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-                      <thead>
-                        <tr style={{ background: "#F8FAFB", textAlign: "left" }}>
-                          {["เวลา", "ประเภท", "ไฟล์", "รายละเอียด"].map(h => (
-                            <th key={h} style={{ padding: "9px 16px", fontWeight: 600, color: "#5B6B75", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.3, borderBottom: "1px solid #E2E8ED" }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {[...db.history].reverse().map((h) => (
-                          <tr key={h.id} style={{ borderBottom: "1px solid #EEF2F4" }}>
-                            <td style={{ padding: "9px 16px", fontFamily: "'IBM Plex Mono', monospace", color: "#5B6B75", whiteSpace: "nowrap" }}>{(h.addedAt || "").slice(0, 16).replace("T", " ")}</td>
-                            <td style={{ padding: "9px 16px" }}>{h.kind === "raw" ? "raw report" : "ไฟล์สรุป"}</td>
-                            <td style={{ padding: "9px 16px" }}>{h.fileName}</td>
-                            <td style={{ padding: "9px 16px", color: "#5B6B75" }}>{h.summary}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                <button
+                  onClick={() => setViewMode("dashboard")}
+                  style={{
+                    background: "#0F3B4D", color: "#fff", border: "none", padding: "10px 20px",
+                    borderRadius: 8, fontSize: 13.5, fontWeight: 600, cursor: "pointer",
+                    display: "inline-flex", alignItems: "center", gap: 8
+                  }}
+                >
+                  ไปยังหน้าแดชบอร์ด <IconArrowRight size={16} color="#fff" />
+                </button>
               </div>
             </div>
           )}
 
-          {/* ========== VIEW: แดชบอร์ด ========== */}
+          {/* VIEW 2: DASHBOARD PAGE */}
           {viewMode === "dashboard" && (
             <React.Fragment>
-              <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, flexWrap: "wrap", gap: 12 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <IconDatabase size={16} color="#5B6B75" />
-                  <span style={{ fontSize: 13, color: "#5B6B75" }}>
-                    ฐานตั้งต้น {BASELINE_MONTH_COUNT} เดือน{db.addedExams.length ? ` + เพิ่มเอง ${db.addedExams.length} exam` : ""}{importedMonthCount ? ` + ${importedMonthCount} เดือนจากไฟล์สรุป` : ""}
-                  </span>
-                  <button onClick={() => setViewMode("manage")} style={{ fontSize: 12, color: "#0F3B4D", background: "none", border: "none", textDecoration: "underline", cursor: "pointer" }}>เพิ่ม/จัดการข้อมูล</button>
+              {!hasData ? (
+                <div style={{ marginTop: 30, background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: 50, textAlign: "center" }}>
+                  <IconAlert size={36} color="#D4A017" />
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "#0F3B4D", marginTop: 12 }}>ยังไม่มีข้อมูลสำหรับแสดงผล</div>
+                  <div style={{ fontSize: 13, color: "#7C8B95", marginTop: 4, marginBottom: 20 }}>กรุณาอัปโหลดไฟล์ Excel ในหน้าหลักก่อน</div>
+                  <button
+                    onClick={() => setViewMode("upload")}
+                    style={{ background: "#0F3B4D", color: "#fff", border: "none", padding: "9px 18px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+                  >
+                    ไปหน้าเพิ่มไฟล์
+                  </button>
                 </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={exportExcel} style={btnStyle("#0F6B54")}><IconSheet size={14} /> ดาวน์โหลด Excel</button>
-                  <button onClick={exportPDF} disabled={pdfBusy} style={{...btnStyle("#0F3B4D"), opacity: pdfBusy ? 0.6 : 1, cursor: pdfBusy ? "wait" : "pointer"}}><IconFile size={14} /> {pdfBusy ? "กำลังสร้าง PDF…" : "ดาวน์โหลด PDF"}</button>
-                </div>
-              </div>
-
-              <div className="no-print" style={{ marginTop: 18, background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: "14px 18px", display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <IconFilter size={14} color="#5B6B75" />
-                  <span style={{ fontSize: 12.5, fontWeight: 600, color: "#5B6B75" }}>ช่วงเดือน</span>
-                </div>
-                <input type="month" value={fromYm} min={minYm} max={maxYm} onChange={(e) => setDateFrom(e.target.value)} style={dateInputStyle} />
-                <span style={{ color: "#B8C6CD" }}>—</span>
-                <input type="month" value={toYm} min={minYm} max={maxYm} onChange={(e) => setDateTo(e.target.value)} style={dateInputStyle} />
-                <button onClick={() => { setDateFrom(""); setDateTo(""); }} style={{ fontSize: 12, color: "#0F3B4D", background: "none", border: "none", textDecoration: "underline", cursor: "pointer" }}>ทั้งหมด</button>
-                <div style={{ width: 1, height: 24, background: "#E2E8ED" }} />
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 12.5, fontWeight: 600, color: "#5B6B75" }}>เกณฑ์ Ka,r ≥</span>
-                  <input type="number" step="0.1" value={threshold} onChange={(e) => setThreshold(parseFloat(e.target.value) || 0)}
-                    style={{ ...dateInputStyle, width: 64, fontFamily: "'IBM Plex Mono', monospace" }} />
-                  <span style={{ fontSize: 12.5, color: "#5B6B75" }}>Gy</span>
-                </div>
-              </div>
-
-              <div className="no-print" style={{ display: "flex", gap: 8, marginTop: 18 }}>
-                <Pill active={activeTab === "overview"} onClick={() => setActiveTab("overview")}>ภาพรวม & ผู้ป่วยเกินเกณฑ์</Pill>
-                <Pill active={activeTab === "chart"} onClick={() => setActiveTab("chart")}>กราฟ DRLs รายเดือน</Pill>
-              </div>
-
-              {activeTab === "overview" && (
-                <div style={{ marginTop: 18 }}>
-                  <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-                    <StatCard label="Exam ที่เพิ่มเอง (ในช่วงเวลา)" value={overallStats.total.toLocaleString()} icon={IconActivity} />
-                    <StatCard label={`ผู้ป่วยเกิน ${threshold} Gy`} value={exceedances.length} tone={exceedances.length > 0 ? "alert" : "good"} icon={IconAlert} />
-                    <StatCard label="Ka,r สูงสุดที่พบ (ข้อมูลที่เพิ่มเอง)" value={overallStats.maxKar.toFixed(2) + " Gy"} tone={overallStats.maxKar >= threshold ? "alert" : "good"} />
+              ) : (
+                <React.Fragment>
+                  <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 20, flexWrap: "wrap", gap: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <IconSheet size={16} color="#5B6B75" />
+                      <span style={{ fontSize: 13, color: "#5B6B75" }}>{fileName}</span>
+                      <button onClick={() => setViewMode("upload")} style={{ fontSize: 12, color: "#0F3B4D", background: "none", border: "none", textDecoration: "underline", cursor: "pointer" }}>เปลี่ยนไฟล์</button>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button onClick={exportExcel} style={btnStyle("#0F6B54")}><IconSheet size={14} /> ดาวน์โหลด Excel</button>
+                      <button onClick={exportPDF} style={btnStyle("#0F3B4D")}><IconFile size={14} /> ดาวน์โหลด PDF</button>
+                    </div>
                   </div>
 
-                  {db.addedExams.length === 0 && (
-                    <div style={{ marginTop: 16, background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 10, padding: "12px 16px", fontSize: 12.5, color: "#92400E", lineHeight: 1.6 }}>
-                      ℹ️ ข้อมูลรายผู้ป่วย (ตารางเกินเกณฑ์ & จำนวน exam) มาจาก <b>raw Dose Report</b> ที่คุณเพิ่มเอง — ตอนนี้ยังไม่มี จึงแสดงเป็น 0<br/>
-                      กราฟด้านล่างและแท็บ "กราฟ DRLs รายเดือน" แสดงจาก<b>ฐานข้อมูลตั้งต้น</b>ได้ตามปกติ · จำนวนผู้ป่วย Ka,r ≥ 3 Gy รายปีดูได้จากกราฟด้านล่าง
+                  {warnings.length > 0 && (
+                    <div className="no-print" style={{ marginTop: 10, fontSize: 12, color: "#8494A0" }}>
+                      {warnings.map((w, i) => <div key={i}>· {w}</div>)}
                     </div>
                   )}
 
-                  {/* กราฟจำนวนผู้ป่วย Ka,r >= 3 Gy รายปี (จากฐานตั้งต้น + ที่เพิ่ม) */}
-                  <div style={{ marginTop: 18, background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: "16px 20px" }}>
-                    <div style={{ fontWeight: 700, fontSize: 14.5, marginBottom: 4 }}>จำนวนผู้ป่วยที่ได้รับ Ka,r ≥ 3 Gy รายปี (พ.ศ.)</div>
-                    <div style={{ fontSize: 12, color: "#8494A0", marginBottom: 8 }}>รวมฐานข้อมูลตั้งต้น + ข้อมูล raw ที่เพิ่มเอง</div>
-                    <ResponsiveContainer width="100%" height={260}>
-                      <BarChart data={karYearly} margin={{ top: 12, right: 20, left: 0, bottom: 4 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#EEF2F4" vertical={false} />
-                        <XAxis dataKey="year" tick={{ fontSize: 11, fill: "#5B6B75" }} />
-                        <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#5B6B75" }} />
-                        <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #E2E8ED", fontSize: 12.5 }} />
-                        <Bar dataKey="count" name="จำนวนผู้ป่วย" fill="#C2410C" radius={[3, 3, 0, 0]} isAnimationActive={false} />
-                      </BarChart>
-                    </ResponsiveContainer>
+                  <div className="no-print" style={{ marginTop: 18, background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: "14px 18px", display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <IconFilter size={14} color="#5B6B75" />
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: "#5B6B75" }}>ช่วงเวลา</span>
+                    </div>
+                    <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={dateInputStyle} />
+                    <span style={{ color: "#B8C6CD" }}>—</span>
+                    <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={dateInputStyle} />
+                    <div style={{ width: 1, height: 24, background: "#E2E8ED" }} />
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: "#5B6B75" }}>เกณฑ์ Ka,r ≥</span>
+                      <input type="number" step="0.1" value={threshold} onChange={(e) => setThreshold(parseFloat(e.target.value) || 0)}
+                        style={{ ...dateInputStyle, width: 64, fontFamily: "'IBM Plex Mono', monospace" }} />
+                      <span style={{ fontSize: 12.5, color: "#5B6B75" }}>Gy</span>
+                    </div>
                   </div>
 
-                  <div style={{ marginTop: 18, background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", overflow: "hidden" }}>
-                    <div style={{ padding: "16px 20px", borderBottom: "1px solid #E2E8ED", display: "flex", alignItems: "center", gap: 8 }}>
-                      <IconAlert size={16} color="#B91C1C" />
-                      <span style={{ fontWeight: 700, fontSize: 14.5 }}>ผู้ป่วยที่ได้รับ Ka,r ≥ {threshold} Gy</span>
-                      <span style={{ fontSize: 12.5, color: "#8494A0" }}>({exceedances.length} ราย)</span>
-                    </div>
-                    {exceedances.length === 0 ? (
-                      <div style={{ padding: 40, textAlign: "center", color: "#8494A0", fontSize: 13.5 }}>ไม่พบผู้ป่วยที่มีค่า Ka,r เกินเกณฑ์ในช่วงเวลานี้ (จากข้อมูล raw ที่เพิ่มเอง)</div>
-                    ) : (
-                      <div style={{ overflowX: "auto" }}>
-                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                          <thead>
-                            <tr style={{ background: "#F8FAFB", textAlign: "left" }}>
-                              {["HN", "ชื่อผู้ป่วย", "วันที่", "หัตถการ", "Ka,r (Gy)", "DAP (Gy·cm2)"].map(h => (
-                                <th key={h} style={{ padding: "10px 16px", fontWeight: 600, color: "#5B6B75", fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.3, borderBottom: "1px solid #E2E8ED" }}>{h}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {exceedances.map((e, i) => (
-                              <tr key={i} style={{ borderBottom: "1px solid #EEF2F4" }}>
-                                <td style={{ padding: "10px 16px", fontFamily: "'IBM Plex Mono', monospace" }}>{e.mrn || "-"}</td>
-                                <td style={{ padding: "10px 16px" }}>{e.patientName || "-"}</td>
-                                <td style={{ padding: "10px 16px", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5 }}>{e.dateStr}</td>
-                                <td style={{ padding: "10px 16px" }}>{e.procedureRaw}</td>
-                                <td style={{ padding: "10px 16px", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: e.kar_Gy >= 5 ? "#B91C1C" : "#C2410C" }}>{e.kar_Gy.toFixed(2)}</td>
-                                <td style={{ padding: "10px 16px", fontFamily: "'IBM Plex Mono', monospace", color: "#5B6B75" }}>{e.dap.toFixed(2)}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                  <div className="no-print" style={{ display: "flex", gap: 8, marginTop: 18 }}>
+                    <Pill active={activeTab === "overview"} onClick={() => setActiveTab("overview")}>ภาพรวม & ผู้ป่วยเกินเกณฑ์</Pill>
+                    <Pill active={activeTab === "chart"} onClick={() => setActiveTab("chart")}>กราฟ DRLs รายเดือน</Pill>
+                  </div>
+
+                  {activeTab === "overview" && (
+                    <div style={{ marginTop: 18 }}>
+                      <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+                        <StatCard label="Exam ทั้งหมดในช่วงเวลา" value={overallStats.total.toLocaleString()} icon={IconActivity} />
+                        <StatCard label={`ผู้ป่วยเกิน ${threshold} Gy`} value={exceedances.length} tone={exceedances.length > 0 ? "alert" : "good"} icon={IconAlert} />
+                        <StatCard label="Ka,r สูงสุดที่พบ" value={overallStats.maxKar.toFixed(2) + " Gy"} tone={overallStats.maxKar >= threshold ? "alert" : "good"} />
                       </div>
-                    )}
-                  </div>
 
-                  <div style={{ marginTop: 18, background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: "16px 20px" }}>
-                    <div style={{ fontWeight: 700, fontSize: 14.5, marginBottom: 12 }}>จำนวน exam ต่อหัตถการ (จากข้อมูลที่เพิ่มเอง)</div>
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                      {PROC_ORDER.map(p => (
-                        <div key={p} style={{ background: "#F8FAFB", borderRadius: 8, padding: "8px 14px", fontSize: 12.5 }}>
-                          <span style={{ color: "#5B6B75" }}>{p}</span>{" "}
-                          <span style={{ fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace" }}>{overallStats.procCount[p] || 0}</span>
+                      <div style={{ marginTop: 22, background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", overflow: "hidden" }}>
+                        <div style={{ padding: "16px 20px", borderBottom: "1px solid #E2E8ED", display: "flex", alignItems: "center", gap: 8 }}>
+                          <IconAlert size={16} color="#B91C1C" />
+                          <span style={{ fontWeight: 700, fontSize: 14.5 }}>ผู้ป่วยที่ได้รับ Ka,r ≥ {threshold} Gy</span>
+                          <span style={{ fontSize: 12.5, color: "#8494A0" }}>({exceedances.length} ราย)</span>
                         </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {activeTab === "chart" && (
-                <div style={{ marginTop: 18 }}>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-                    {PROC_ORDER.map(p => (
-                      <Pill key={p} active={selectedProc === p} onClick={() => setSelectedProc(p)}>{p}</Pill>
-                    ))}
-                  </div>
-
-                  <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: "20px 20px 8px", marginBottom: 18 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                      <div>
-                        <div style={{ fontWeight: 700, fontSize: 15 }}>P50 DAP รายเดือน — {selectedProc}</div>
-                        <div style={{ fontSize: 12, color: "#8494A0" }}>
-                          {drlValue ? `DRLs ประเทศไทย = ${drlValue.toFixed(2)} Gy·cm2` : "ไม่มีค่า DRLs อ้างอิงสำหรับหัตถการนี้"}
-                        </div>
+                        {exceedances.length === 0 ? (
+                          <div style={{ padding: 40, textAlign: "center", color: "#8494A0", fontSize: 13.5 }}>ไม่พบผู้ป่วยที่มีค่า Ka,r เกินเกณฑ์ที่กำหนดในช่วงเวลานี้</div>
+                        ) : (
+                          <div style={{ overflowX: "auto" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                              <thead>
+                                <tr style={{ background: "#F8FAFB", textAlign: "left" }}>
+                                  {["HN", "ชื่อผู้ป่วย", "วันที่", "หัตถการ", "Ka,r (Gy)", "DAP (Gy·cm2)"].map(h => (
+                                    <th key={h} style={{ padding: "10px 16px", fontWeight: 600, color: "#5B6B75", fontSize: 11.5, textTransform: "uppercase", letterSpacing: 0.3, borderBottom: "1px solid #E2E8ED" }}>{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {exceedances.map((e, i) => (
+                                  <tr key={i} style={{ borderBottom: "1px solid #EEF2F4" }}>
+                                    <td style={{ padding: "10px 16px", fontFamily: "'IBM Plex Mono', monospace" }}>{e.mrn || "-"}</td>
+                                    <td style={{ padding: "10px 16px" }}>{e.patientName || "-"}</td>
+                                    <td style={{ padding: "10px 16px", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5 }}>{e.dateStr}</td>
+                                    <td style={{ padding: "10px 16px" }}>{e.procedureRaw}</td>
+                                    <td style={{ padding: "10px 16px", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: e.kar_Gy >= 5 ? "#B91C1C" : "#C2410C" }}>{e.kar_Gy.toFixed(2)}</td>
+                                    <td style={{ padding: "10px 16px", fontFamily: "'IBM Plex Mono', monospace", color: "#5B6B75" }}>{e.dap.toFixed(2)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
                       </div>
-                      {refNames.length > 0 && (
-                        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "#5B6B75", cursor: "pointer" }}>
-                          <input type="checkbox" checked={showIntlRefs} onChange={(e) => setShowIntlRefs(e.target.checked)} />
-                          แสดงเส้นอ้างอิงต่างประเทศ
-                        </label>
-                      )}
-                    </div>
 
-                    {chartData.length === 0 ? (
-                      <div style={{ padding: 60, textAlign: "center", color: "#8494A0" }}>ไม่มีข้อมูลในช่วงเวลาที่เลือกสำหรับหัตถการนี้</div>
-                    ) : (
-                      <ResponsiveContainer width="100%" height={420}>
-                        <LineChart data={chartData} margin={{ top: 20, right: 24, left: 8, bottom: 8 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#EEF2F4" vertical={false} />
-                          <XAxis dataKey="month" tick={{ fontSize: 10, fill: "#5B6B75" }} interval={0} angle={-40} textAnchor="end" height={60} />
-                          <YAxis tick={{ fontSize: 11, fill: "#5B6B75" }} label={{ value: "DAP (Gy cm2)", angle: -90, position: "insideLeft", fontSize: 11, fill: "#5B6B75" }} />
-                          <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #E2E8ED", fontSize: 12.5 }} />
-                          <Legend wrapperStyle={{ fontSize: 12 }} />
-                          {showIntlRefs && refNames.map(rn => (
-                            <Line key={rn} type="monotone" dataKey={rn} stroke={REF_COLORS[rn] || "#999"} strokeDasharray="5 4" dot={false} strokeWidth={1.5} isAnimationActive={false} />
+                      <div style={{ marginTop: 18, background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: "16px 20px" }}>
+                        <div style={{ fontWeight: 700, fontSize: 14.5, marginBottom: 12 }}>จำนวน exam ต่อหัตถการ</div>
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                          {PROC_ORDER.map(p => (
+                            <div key={p} style={{ background: "#F8FAFB", borderRadius: 8, padding: "8px 14px", fontSize: 12.5 }}>
+                              <span style={{ color: "#5B6B75" }}>{p}</span>{" "}
+                              <span style={{ fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace" }}>{overallStats.procCount[p] || 0}</span>
+                            </div>
                           ))}
-                          <Line type="monotone" dataKey="MiSIR" stroke={MISIR_BLUE} strokeWidth={2.5} dot={{ r: 3.5 }} isAnimationActive={false} />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    )}
-                  </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
-                  <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: "20px 20px 8px" }}>
-                    <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>เปรียบเทียบรายปี — {selectedProc}</div>
-                    <ResponsiveContainer width="100%" height={340}>
-                      <BarChart data={yearlyAll[selectedProc] || []} margin={{ top: 20, right: 24, left: 8, bottom: 8 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#EEF2F4" vertical={false} />
-                        <XAxis dataKey="year" tick={{ fontSize: 11, fill: "#5B6B75" }} />
-                        <YAxis tick={{ fontSize: 11, fill: "#5B6B75" }} label={{ value: "DAP (Gy cm2)", angle: -90, position: "insideLeft", fontSize: 11, fill: "#5B6B75" }} />
-                        <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #E2E8ED", fontSize: 12.5 }} />
-                        <Legend wrapperStyle={{ fontSize: 12 }} />
-                        <Bar dataKey="MiSIR" fill={CORAL} radius={[3, 3, 0, 0]} />
-                        {DRLS_THAILAND.hasOwnProperty(selectedProc) && <Bar dataKey="DRLs" fill={DRL_GOLD} radius={[3, 3, 0, 0]} />}
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
+                  {activeTab === "chart" && (
+                    <div style={{ marginTop: 18 }}>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+                        {PROC_ORDER.map(p => (
+                          <Pill key={p} active={selectedProc === p} onClick={() => setSelectedProc(p)}>{p}</Pill>
+                        ))}
+                      </div>
+
+                      <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: "20px 20px 8px", marginBottom: 18 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: 15 }}>P50 DAP รายเดือน — {selectedProc}</div>
+                            <div style={{ fontSize: 12, color: "#8494A0" }}>
+                              {drlValue ? `DRLs ประเทศไทย = ${drlValue.toFixed(2)} Gy·cm2` : "ไม่มีค่า DRLs อ้างอิงสำหรับหัตถการนี้"}
+                            </div>
+                          </div>
+                          {refNames.length > 0 && (
+                            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "#5B6B75", cursor: "pointer" }}>
+                              <input type="checkbox" checked={showIntlRefs} onChange={(e) => setShowIntlRefs(e.target.checked)} />
+                              แสดงเส้นอ้างอิงต่างประเทศ
+                            </label>
+                          )}
+                        </div>
+
+                        {chartData.length === 0 ? (
+                          <div style={{ padding: 60, textAlign: "center", color: "#8494A0" }}>ไม่มีข้อมูลในช่วงเวลาที่เลือกสำหรับหัตถการนี้</div>
+                        ) : (
+                          <ResponsiveContainer width="100%" height={420}>
+                            <LineChart data={chartData} margin={{ top: 20, right: 24, left: 8, bottom: 8 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#EEF2F4" vertical={false} />
+                              <XAxis dataKey="month" tick={{ fontSize: 10, fill: "#5B6B75" }} interval={0} angle={-40} textAnchor="end" height={60} />
+                              <YAxis tick={{ fontSize: 11, fill: "#5B6B75" }} label={{ value: "DAP (Gy cm2)", angle: -90, position: "insideLeft", fontSize: 11, fill: "#5B6B75" }} />
+                              <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #E2E8ED", fontSize: 12.5 }} />
+                              <Legend wrapperStyle={{ fontSize: 12 }} />
+                              {showIntlRefs && refNames.map(rn => (
+                                <Line key={rn} type="monotone" dataKey={rn} stroke={REF_COLORS[rn] || "#999"} strokeDasharray="5 4" dot={false} strokeWidth={1.5} isAnimationActive={false} />
+                              ))}
+                              <Line type="monotone" dataKey="MiSIR" stroke={MISIR_BLUE} strokeWidth={2.5} dot={{ r: 3.5 }} isAnimationActive={false} />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        )}
+                      </div>
+
+                      <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #E2E8ED", padding: "20px 20px 8px" }}>
+                        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>เปรียบเทียบรายปี — {selectedProc}</div>
+                        <ResponsiveContainer width="100%" height={340}>
+                          <BarChart data={combinedYearly[selectedProc] || []} margin={{ top: 20, right: 24, left: 8, bottom: 8 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#EEF2F4" vertical={false} />
+                            <XAxis dataKey="year" tick={{ fontSize: 11, fill: "#5B6B75" }} />
+                            <YAxis tick={{ fontSize: 11, fill: "#5B6B75" }} label={{ value: "DAP (Gy cm2)", angle: -90, position: "insideLeft", fontSize: 11, fill: "#5B6B75" }} />
+                            <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #E2E8ED", fontSize: 12.5 }} />
+                            <Legend wrapperStyle={{ fontSize: 12 }} />
+                            <Bar dataKey="MiSIR" fill={CORAL} radius={[3, 3, 0, 0]} />
+                            {DRLS_THAILAND.hasOwnProperty(selectedProc) && <Bar dataKey="DRLs" fill={DRL_GOLD} radius={[3, 3, 0, 0]} />}
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  )}
+                </React.Fragment>
               )}
             </React.Fragment>
           )}
